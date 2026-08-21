@@ -23,6 +23,11 @@ find_path(PM_GLES2_INCLUDE_PATH GLES2/gl2.h
     PATHS /usr/include /usr/local/include
     NO_CMAKE_FIND_ROOT_PATH
 )
+find_path(PM_GLES3_INCLUDE_PATH GLES3/gl32.h
+    HINTS ${PM_GLES2_INCLUDE_DIR}
+    PATHS /usr/include /usr/local/include
+    NO_CMAKE_FIND_ROOT_PATH
+)
 
 if(PM_TARGET_LIB_DIR)
     find_library(PM_SDL2_LIBRARY NAMES SDL2 SDL2-2.0
@@ -46,8 +51,8 @@ else()
     find_library(PM_GLES2_LIBRARY NAMES GLESv2 GLESv2_CM)
 endif()
 
-if(NOT PM_SDL2_INCLUDE_PATH OR NOT PM_GLES2_INCLUDE_PATH)
-    message(FATAL_ERROR "SDL2 and GLES2 development headers are required")
+if(NOT PM_SDL2_INCLUDE_PATH OR NOT PM_GLES2_INCLUDE_PATH OR NOT PM_GLES3_INCLUDE_PATH)
+    message(FATAL_ERROR "SDL2, GLES2, and GLES3.2 development headers are required")
 endif()
 if(NOT PM_SDL2_LIBRARY OR NOT PM_EGL_LIBRARY OR NOT PM_GLES2_LIBRARY)
     message(FATAL_ERROR "SDL2, EGL, and GLESv2 target libraries are required")
@@ -70,4 +75,37 @@ target_link_libraries(partyboard-portmaster-probe PRIVATE
     pthread
 )
 
-install(TARGETS partyboard-portmaster-probe RUNTIME DESTINATION .)
+add_executable(partyboard-portmaster-gx-probe
+    src/gx_probe.c
+    src/pc/pc_gx.c
+    src/pc/pc_gx_tev.c
+    src/pc/pc_gx_texture.c
+)
+target_compile_definitions(partyboard-portmaster-gx-probe PRIVATE
+    TARGET_PC
+    PC_USE_GLES
+)
+target_include_directories(partyboard-portmaster-gx-probe PRIVATE
+    ${PM_SDL2_INCLUDE_PATH}
+    ${PM_GLES2_INCLUDE_PATH}
+    ${PM_GLES3_INCLUDE_PATH}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/pc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/include
+)
+target_link_libraries(partyboard-portmaster-gx-probe PRIVATE
+    ${PM_SDL2_LIBRARY}
+    ${PM_EGL_LIBRARY}
+    ${PM_GLES2_LIBRARY}
+    m
+    dl
+    pthread
+)
+add_custom_command(TARGET partyboard-portmaster-gx-probe POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders
+    $<TARGET_FILE_DIR:partyboard-portmaster-gx-probe>/shaders
+)
+
+install(TARGETS partyboard-portmaster-probe partyboard-portmaster-gx-probe RUNTIME DESTINATION .)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/shaders DESTINATION .)
