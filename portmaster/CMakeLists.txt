@@ -109,3 +109,36 @@ add_custom_command(TARGET partyboard-portmaster-gx-probe POST_BUILD
 
 install(TARGETS partyboard-portmaster-probe partyboard-portmaster-gx-probe RUNTIME DESTINATION .)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/shaders DESTINATION .)
+
+# Compile the decompilation against the handheld platform layer without
+# pulling Aurora's SDL3/Dawn desktop runtime into the PortMaster binary.  This
+# object target is intentionally separate from the eventual executable while
+# the platform replacements are brought up one subsystem at a time.
+include(${CMAKE_CURRENT_SOURCE_DIR}/../files.cmake)
+set(PM_GAME_C_FILES)
+foreach(game_file ${GAME_FILES})
+    list(APPEND PM_GAME_C_FILES ${CMAKE_CURRENT_SOURCE_DIR}/../${game_file})
+endforeach()
+
+add_library(partyboard-portmaster-game-objects OBJECT ${PM_GAME_C_FILES})
+target_compile_definitions(partyboard-portmaster-game-objects PRIVATE
+    TARGET_PC
+    PARTY_BOARD_PORTMASTER
+    NON_MATCHING
+    OPTIMIZED_TEXTURE_LOADING
+    BYTESWAPPING
+    TARGET_DOL
+    VERSION=1
+    MUSY_TARGET=MUSY_TARGET_PC
+    MUSY_VERSION_MAJOR=1
+    MUSY_VERSION_MINOR=5
+    MUSY_VERSION_PATCH=4
+)
+target_include_directories(partyboard-portmaster-game-objects PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/pc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/musyx/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/aurora/include/dolphin
+)
