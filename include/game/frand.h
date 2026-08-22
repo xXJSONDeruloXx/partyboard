@@ -12,6 +12,6 @@
 
 u32 frand(void);
 f32 frandf(void);
-u32 frandmod(u32 arg0);
+s32 frandmod(u32 arg0);
 
 #endif

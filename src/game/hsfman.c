@@ -10,6 +10,10 @@
 #include "game/sprite.h"
 #include "game/disp.h"
 
+#ifdef PARTY_BOARD_PORTMASTER
+#include "pc_prof.h"
+#endif
+
 #include "dolphin/gx/GXVert.h"
 
 #include "ext_math.h"
@@ -20,6 +24,7 @@
 
 #ifndef __MWERKS__
 #include <string.h>
+#include <stdlib.h>
 #endif
 
 #define SHADOW_HEAP_SIZE 0x9000
@@ -189,10 +194,51 @@ void Hu3DExec(void) {
     HU3DPROJECTION* var_r26;
 
     HuPerfBegin(3);
+#ifdef PARTY_BOARD_PORTMASTER
+    int pm_hu3d_trace = getenv("PARTYBOARD_HU3D_TRACE") != NULL;
+    int pm_disable_shadow = getenv("PARTYBOARD_DISABLE_SHADOW") != NULL;
+    s32 pm_saved_shadow_f = Hu3DShadowF;
+    s16 pm_saved_shadow_cam_bit = Hu3DShadowCamBit;
+    unsigned long long pm_hu3d_motion_us = 0;
+    unsigned long long pm_hu3d_shape_us = 0;
+    unsigned long long pm_hu3d_cluster_us = 0;
+    unsigned long long pm_hu3d_envelope_us = 0;
+    unsigned long long pm_hu3d_draw_us = 0;
+    unsigned long long pm_hu3d_sprite_us = 0;
+    unsigned long long pm_hu3d_shadow_us = 0;
+    unsigned long long pm_hu3d_camera_us = 0;
+    unsigned long long pm_hu3d_anim_us = 0;
+#define PM_HU3D_CALL(acc, expr) do { \
+        if (pm_hu3d_trace) { \
+            unsigned long long _pm_t0 = pc_prof_now_us(); \
+            (expr); \
+            (acc) += pc_prof_now_us() - _pm_t0; \
+        } else { \
+            (expr); \
+        } \
+    } while (0)
+#else
+    unsigned long long pm_hu3d_motion_us = 0;
+    unsigned long long pm_hu3d_shape_us = 0;
+    unsigned long long pm_hu3d_cluster_us = 0;
+    unsigned long long pm_hu3d_envelope_us = 0;
+    unsigned long long pm_hu3d_draw_us = 0;
+    unsigned long long pm_hu3d_sprite_us = 0;
+    unsigned long long pm_hu3d_shadow_us = 0;
+    unsigned long long pm_hu3d_camera_us = 0;
+    unsigned long long pm_hu3d_anim_us = 0;
+#define PM_HU3D_CALL(acc, expr) do { (void)(acc); (expr); } while (0)
+#endif
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_disable_shadow) {
+        Hu3DShadowF = 0;
+        Hu3DShadowCamBit = 0;
+    }
+#endif
     GXSetCurrentMtx(0U);
     camera = Hu3DCamera;
     shadowModelDrawF = 0;
-    HuSprBegin();
+    PM_HU3D_CALL(pm_hu3d_sprite_us, HuSprBegin());
     syncF = FALSE;
     for (Hu3DCameraNo = 0; Hu3DCameraNo < HU3D_CAM_MAX; Hu3DCameraNo++, camera++) {
         if (-1.0f != camera->fov) {
@@ -201,7 +247,7 @@ void Hu3DExec(void) {
             Hu3DCameraBit = cameraBit;
             if (NoSyncF == 0) {
                 if (Hu3DCameraNo == 0 && Hu3DShadowF != 0 && Hu3DShadowCamBit != 0) {
-                    Hu3DShadowExec();
+                    PM_HU3D_CALL(pm_hu3d_shadow_us, Hu3DShadowExec());
                     syncF = TRUE;
                     GXSetDrawDone();
                 } else if (Hu3DCameraNo != 0) {
@@ -209,17 +255,18 @@ void Hu3DExec(void) {
                     GXSetDrawDone();
                 }
             } else if (Hu3DCameraNo == 0 && Hu3DShadowF != 0 && Hu3DShadowCamBit != 0) {
-                Hu3DShadowExec();
+                PM_HU3D_CALL(pm_hu3d_shadow_us, Hu3DShadowExec());
             }
             var_r26 = &Hu3DProjection[0];
             for (i = 0; i < 4; i++, var_r26++) {
                 if (var_r26->anim != 0) {
-                    C_MTXLookAt(var_r26->lookAtMtx, &var_r26->camPos, &var_r26->camUp, &var_r26->camTarget);
+                    PM_HU3D_CALL(pm_hu3d_camera_us,
+                        C_MTXLookAt(var_r26->lookAtMtx, &var_r26->camPos, &var_r26->camUp, &var_r26->camTarget));
                 }
             }
             if (Hu3DCameraNo == 0) {
-                HuSprDispInit();
-                HuSprExec(0x7F);
+                PM_HU3D_CALL(pm_hu3d_sprite_us, HuSprDispInit());
+                PM_HU3D_CALL(pm_hu3d_sprite_us, HuSprExec(0x7F));
             }
             if (FogData.fogType != GX_FOG_NONE) {
                 GXSetFog(FogData.fogType, FogData.fogStart, FogData.fogEnd, camera->nnear, camera->ffar, FogData.color);
@@ -232,40 +279,45 @@ void Hu3DExec(void) {
                     temp(j);
                 }
                 if (layerNum[j] != 0) {
-                    Hu3DDrawPreInit();
-                    Hu3DCameraSet(Hu3DCameraNo, Hu3DCameraMtx);
-                    MTXInvXpose(Hu3DCameraMtx, Hu3DCameraMtxXPose);
+                    PM_HU3D_CALL(pm_hu3d_camera_us, Hu3DDrawPreInit());
+                    PM_HU3D_CALL(pm_hu3d_camera_us, Hu3DCameraSet(Hu3DCameraNo, Hu3DCameraMtx));
+                    PM_HU3D_CALL(pm_hu3d_camera_us, MTXInvXpose(Hu3DCameraMtx, Hu3DCameraMtxXPose));
                     data = Hu3DData;
                     for (i = 0, var_r23 = i; i < HU3D_MODEL_MAX; i++, data++) {
                         if (data->hsf != 0) {
                             if ((data->attr & HU3D_ATTR_CAMERA) != 0) {
-                                Hu3DCameraMotionExec(i);
+                                PM_HU3D_CALL(pm_hu3d_motion_us, Hu3DCameraMotionExec(i));
                             } else {
                                 if ((data->attr & HU3D_ATTR_CAMERA_UPDATE) == HU3D_ATTR_CAMERA_UPDATE && data->motId != -1) {
-                                    Hu3DMotionExec(i, data->motId, data->motWork.time, 0);
+                                    PM_HU3D_CALL(pm_hu3d_motion_us,
+                                        Hu3DMotionExec(i, data->motId, data->motWork.time, 0));
                                 }
                                 if ((data->attr & (HU3D_ATTR_DISPOFF|HU3D_ATTR_MOTION_OFF)) == 0 && (data->cameraBit & cameraBit) != 0 && data->layerNo == j) {
                                     if (((data->attr & HU3D_ATTR_MOT_EXEC) == 0 && (data->attr & HU3D_ATTR_MOT_SLOW) == 0) || ((data->attr & HU3D_ATTR_MOT_SLOW) != 0 && (data->tick & 1) != 0)) {
                                         var_r25 = 0;
                                         data->motAttr &= ~HU3D_MOTATTR;
                                         if (data->motId != -1) {
-                                            Hu3DMotionExec(i, data->motId, data->motWork.time, 0);
+                                            PM_HU3D_CALL(pm_hu3d_motion_us,
+                                                Hu3DMotionExec(i, data->motId, data->motWork.time, 0));
                                         }
                                         if (data->motIdShift != -1) {
-                                            Hu3DSubMotionExec(i);
+                                            PM_HU3D_CALL(pm_hu3d_motion_us, Hu3DSubMotionExec(i));
                                         }
                                         if (data->motIdOvl != -1) {
-                                            Hu3DMotionExec(i, data->motIdOvl, data->motOvlWork.time, 1);
+                                            PM_HU3D_CALL(pm_hu3d_motion_us,
+                                                Hu3DMotionExec(i, data->motIdOvl, data->motOvlWork.time, 1));
                                         }
                                         if ((data->attr & HU3D_ATTR_CLUSTER_ON) != 0) {
-                                            ClusterMotionExec(data);
+                                            PM_HU3D_CALL(pm_hu3d_cluster_us, ClusterMotionExec(data));
                                             var_r25 = 1;
                                         }
                                         if (data->motIdShape != -1) {
                                             if (data->motId == -1) {
-                                                Hu3DMotionExec(i, data->motIdShape, data->motShapeWork.time, 0);
+                                                PM_HU3D_CALL(pm_hu3d_shape_us,
+                                                    Hu3DMotionExec(i, data->motIdShape, data->motShapeWork.time, 0));
                                             } else {
-                                                Hu3DMotionExec(i, data->motIdShape, data->motShapeWork.time, 1);
+                                                PM_HU3D_CALL(pm_hu3d_shape_us,
+                                                    Hu3DMotionExec(i, data->motIdShape, data->motShapeWork.time, 1));
                                             }
                                             var_r25 = 1;
                                         }
@@ -273,13 +325,13 @@ void Hu3DExec(void) {
                                             var_r25 = 1;
                                             InitVtxParm(data->hsf);
                                             if (data->motIdShape != -1) {
-                                                ShapeProc(data->hsf);
+                                                PM_HU3D_CALL(pm_hu3d_shape_us, ShapeProc(data->hsf));
                                             }
                                             if ((data->attr & 0x400) != 0) {
-                                                ClusterProc(data);
+                                                PM_HU3D_CALL(pm_hu3d_cluster_us, ClusterProc(data));
                                             }
                                             if (data->hsf->cenvNum != 0) {
-                                                EnvelopeProc(data->hsf);
+                                                PM_HU3D_CALL(pm_hu3d_envelope_us, EnvelopeProc(data->hsf));
                                             }
                                             PPCSync();
                                         }
@@ -298,7 +350,7 @@ void Hu3DExec(void) {
                                         mtxTransCat(sp40, data->pos.x, data->pos.y, data->pos.z);
                                         MTXConcat(Hu3DCameraMtx, sp40, sp10);
                                         MTXConcat(sp10, data->mtx, sp10);
-                                        Hu3DDraw(data, sp10, &data->scale);
+                                        PM_HU3D_CALL(pm_hu3d_draw_us, Hu3DDraw(data, sp10, &data->scale));
                                     }
                                     data->tick++;
                                     var_r23++;
@@ -309,21 +361,37 @@ void Hu3DExec(void) {
                             }
                         }
                     }
-                    Hu3DDrawPost();
+                    PM_HU3D_CALL(pm_hu3d_camera_us, Hu3DDrawPost());
                 }
             }
         }
     }
-    HuSprDispInit();
-    HuSprExec(0);
+    PM_HU3D_CALL(pm_hu3d_sprite_us, HuSprDispInit());
+    PM_HU3D_CALL(pm_hu3d_sprite_us, HuSprExec(0));
     data = Hu3DData;
     for (i = 0; i < HU3D_MODEL_MAX; i++, data++) {
         if (data->hsf != 0 && (data->motId != -1 || (data->attr & HU3D_ATTR_CLUSTER_ON) != 0 || data->motIdShape != -1) && (Hu3DPauseF == 0 || (data->attr & HU3D_ATTR_NOPAUSE) != 0)) {
-            Hu3DMotionNext(i);
+            PM_HU3D_CALL(pm_hu3d_motion_us, Hu3DMotionNext(i));
         }
     }
-    HuSprFinish();
-    Hu3DAnimExec();
+    PM_HU3D_CALL(pm_hu3d_sprite_us, HuSprFinish());
+    PM_HU3D_CALL(pm_hu3d_anim_us, Hu3DAnimExec());
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_hu3d_trace) {
+        printf("[PM/HU3D] motion=%lluus shape=%lluus cluster=%lluus envelope=%lluus draw=%lluus sprite=%lluus shadow=%lluus camera=%lluus anim=%lluus\n",
+            pm_hu3d_motion_us, pm_hu3d_shape_us, pm_hu3d_cluster_us,
+            pm_hu3d_envelope_us, pm_hu3d_draw_us, pm_hu3d_sprite_us,
+            pm_hu3d_shadow_us, pm_hu3d_camera_us, pm_hu3d_anim_us);
+        fflush(stdout);
+    }
+#endif
+#undef PM_HU3D_CALL
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_disable_shadow) {
+        Hu3DShadowF = pm_saved_shadow_f;
+        Hu3DShadowCamBit = pm_saved_shadow_cam_bit;
+    }
+#endif
     HuPerfEnd(3);
 }
 
@@ -1984,7 +2052,28 @@ void Hu3DShadowExec(void) {
     GXColor sp14 = {0, 0, 0, 0};
     s32 test;
     s32 test2;
+#ifdef PARTY_BOARD_PORTMASTER
+    int pm_shadow_trace = getenv("PARTYBOARD_HU3D_TRACE") != NULL;
+    static int pm_shadow_size_override = -1;
+    unsigned long long pm_shadow_setup_us = 0;
+    unsigned long long pm_shadow_models_us = 0;
+    unsigned long long pm_shadow_post_us = 0;
+    unsigned long long pm_shadow_copy_us = 0;
+    unsigned long long pm_shadow_plane_us = 0;
+    unsigned long long pm_shadow_t0;
+    if (pm_shadow_size_override == -1) {
+        const char *value = getenv("PARTYBOARD_SHADOW_SIZE");
+        pm_shadow_size_override = value != NULL ? (int)strtol(value, NULL, 10) : 0;
+    }
+    if (pm_shadow_size_override > 0 &&
+        Hu3DShadowData.size != (u16)pm_shadow_size_override) {
+        Hu3DShadowSizeSet((u16)pm_shadow_size_override);
+    }
+#endif
 
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_shadow_trace) pm_shadow_t0 = pc_prof_now_us();
+#endif
     Hu3DDrawPreInit();
     GXSetCopyClear(sp14, 0xFFFFFF);
     C_MTXPerspective(sp18, Hu3DShadowData.fov, HU_DISP_ASPECT, Hu3DShadowData.nnear, Hu3DShadowData.ffar);
@@ -2004,6 +2093,13 @@ void Hu3DShadowExec(void) {
     shadowModelDrawF = 1;
     GXInvalidateTexAll();
     GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, BGColor);
+
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_shadow_trace) {
+        pm_shadow_setup_us = pc_prof_now_us() - pm_shadow_t0;
+        pm_shadow_t0 = pc_prof_now_us();
+    }
+#endif
 
     for (var_r30 = 0; var_r30 < HU3D_MODEL_MAX; var_r30++, var_r31++) {
         if (var_r31->hsf != 0 && (var_r31->attr & HU3D_ATTR_SHADOW) != 0 && (var_r31->attr & HU3D_ATTR_DISPOFF) == 0 && (var_r31->attr & HU3D_ATTR_HOOK) == 0) {
@@ -2054,7 +2150,19 @@ void Hu3DShadowExec(void) {
             Hu3DDraw(var_r31, sp88, &var_r31->scale);
         }
     }
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_shadow_trace) {
+        pm_shadow_models_us = pc_prof_now_us() - pm_shadow_t0;
+        pm_shadow_t0 = pc_prof_now_us();
+    }
+#endif
     Hu3DDrawPost();
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_shadow_trace) {
+        pm_shadow_post_us = pc_prof_now_us() - pm_shadow_t0;
+        pm_shadow_t0 = pc_prof_now_us();
+    }
+#endif
     shadowModelDrawF = 0;
     if (Hu3DShadowData.size <= 0xF0) {
         GXSetTexCopySrc(0, 0, Hu3DShadowData.size * 2, Hu3DShadowData.size * 2);
@@ -2064,6 +2172,12 @@ void Hu3DShadowExec(void) {
         GXSetTexCopyDst(Hu3DShadowData.size, Hu3DShadowData.size, GX_CTF_R8, 0);
     }
     GXCopyTex(Hu3DShadowData.buf, 1);
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_shadow_trace) {
+        pm_shadow_copy_us = pc_prof_now_us() - pm_shadow_t0;
+        pm_shadow_t0 = pc_prof_now_us();
+    }
+#endif
     GXSetViewport(0.0f, 0.0f, RenderMode->fbWidth, RenderMode->xfbHeight, 0.0f, 1.0f);
     GXSetScissor(0, 0, RenderMode->fbWidth, RenderMode->efbHeight);
     C_MTXOrtho(sp18, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f);
@@ -2092,6 +2206,15 @@ void Hu3DShadowExec(void) {
     GXPosition3u8(1, 1, 0);
     GXPosition3u8(0, 1, 0);
     GXEnd();
+#ifdef PARTY_BOARD_PORTMASTER
+    if (pm_shadow_trace) {
+        pm_shadow_plane_us = pc_prof_now_us() - pm_shadow_t0;
+        printf("[PM/HU3DSHADOW] setup=%lluus models=%lluus post=%lluus copy=%lluus plane=%lluus\n",
+            pm_shadow_setup_us, pm_shadow_models_us, pm_shadow_post_us,
+            pm_shadow_copy_us, pm_shadow_plane_us);
+        fflush(stdout);
+    }
+#endif
 }
 
 s16 Hu3DProjectionCreate(void *arg0, f32 arg8, f32 arg9, f32 argA) {

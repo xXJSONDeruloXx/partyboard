@@ -1,5 +1,6 @@
 /* pc_gx.c - GX API → OpenGL 3.3: state management, vertex submission, draw dispatch */
 #include "pc_gx_internal.h"
+#include "pc_prof.h"
 #include <stddef.h>
 static GLushort quad_index_buf[(PC_GX_MAX_VERTS / 4) * 6];
 #include <math.h>
@@ -130,6 +131,7 @@ void pc_gx_efb_capture_cleanup(void) {
 
 typedef struct {
     int active;
+    int compact;
     u8* buf;
     u32 size;
     u32 off;
@@ -137,6 +139,13 @@ typedef struct {
 } PCGXDLBuildState;
 
 static PCGXDLBuildState g_pc_gx_dl = {0};
+static int s_dl_batch_merge;
+static int s_dl_compact_override = -1;
+/* Resolved HSF display lists are replayed one at a time.  Keep the completed
+ * batch open across their synthetic GXEnd so the following GXBegin can merge
+ * identical material/primitive state; ordinary direct GXEnd calls still flush
+ * immediately. */
+static int s_dl_replaying;
 
 enum {
     PCGX_DL_OP_TEXCOPY_SRC = 0x1001,
@@ -146,6 +155,14 @@ enum {
     PCGX_DL_OP_BEGIN       = 0x1101,
     PCGX_DL_OP_VERTEX      = 0x1102,
     PCGX_DL_OP_END         = 0x1103,
+    PCGX_DL_OP_POSITION    = 0x1201,
+    PCGX_DL_OP_POSITION_X16 = 0x1202,
+    PCGX_DL_OP_NORMAL      = 0x1203,
+    PCGX_DL_OP_NORMAL_X16  = 0x1204,
+    PCGX_DL_OP_COLOR       = 0x1205,
+    PCGX_DL_OP_COLOR_X16   = 0x1206,
+    PCGX_DL_OP_TEXCOORD    = 0x1207,
+    PCGX_DL_OP_TEXCOORD_X16 = 0x1208,
 };
 
 typedef struct {
@@ -155,6 +172,27 @@ typedef struct {
     u16 reserved;
 } PCGXDLBegin;
 
+typedef struct {
+    u16 index;
+    u16 reserved;
+} PCGXDLIndex;
+
+typedef struct {
+    float value[3];
+} PCGXDLPosition;
+
+typedef struct {
+    float value[3];
+} PCGXDLNormal;
+
+typedef struct {
+    u8 value[4];
+} PCGXDLColor;
+
+typedef struct {
+    float value[2];
+} PCGXDLTexCoord;
+
 static void pc_gx_dl_write(const void* data, u32 len) {
     if (!g_pc_gx_dl.active || g_pc_gx_dl.overflow) return;
     if (g_pc_gx_dl.off + len > g_pc_gx_dl.size) {
@@ -163,6 +201,11 @@ static void pc_gx_dl_write(const void* data, u32 len) {
     }
     memcpy(g_pc_gx_dl.buf + g_pc_gx_dl.off, data, len);
     g_pc_gx_dl.off += len;
+}
+
+static void pc_gx_dl_write_command(u32 op, const void* payload, u32 payload_size) {
+    pc_gx_dl_write(&op, sizeof(op));
+    pc_gx_dl_write(payload, payload_size);
 }
 
 static void pc_unpack_rgba8f(u32 packed, float* out_rgba) {
@@ -195,6 +238,10 @@ int pc_gx_prim_draws[5];    /* quads, tris, strips, fans, other */
 int pc_gx_merged_batches;
 int pc_gx_culled_draws;
 int pc_gx_flush_reason[18];
+unsigned long long pc_gx_dl_replay_time_us;
+unsigned long long pc_gx_dl_replay_bytes;
+unsigned long long pc_gx_dl_replay_vertices;
+int pc_gx_dl_replay_calls;
 /* Set when a flush actually broke a batch; the next state change (or GXBegin/
  * viewport/scissor) claims it, attributing the batch break to its cause. */
 static int s_flush_pending_attr = 0;
@@ -224,6 +271,14 @@ static int s_batch_cull = 0;
  * (strip winding alternates; fans pivot on the first vertex). */
 static void pc_gx_commit_vertex(void) {
     if (g_pc_gx_dl.active) {
+        /* Indexed/direct attribute calls are recorded as compact commands as
+         * they arrive.  Committing a vertex is therefore only bookkeeping;
+         * the old resolved-vertex path remains readable for older buffers. */
+        if (g_pc_gx_dl.compact) {
+            if (!g_pc_gx_dl.overflow)
+                g_gx.current_vertex_idx++;
+            return;
+        }
         u32 op = PCGX_DL_OP_VERTEX;
         pc_gx_dl_write(&op, sizeof(op));
         pc_gx_dl_write(&g_gx.current_vertex, sizeof(g_gx.current_vertex));
@@ -377,10 +432,12 @@ void pc_gx_init(void) {
     s_stream_vbo = (getenv("PC_NO_STREAM_VBO") == NULL);
     s_stream_subdata = (getenv("PC_STREAM_SUBDATA") != NULL);
     s_strip_convert = (getenv("PC_NO_STRIP_CONVERT") == NULL);
+    s_dl_batch_merge = (getenv("PC_DL_BATCH_MERGE") != NULL);
     s_batch_cull = (getenv("PC_BATCH_CULL") != NULL &&
                     getenv("PC_NO_BATCH_CULL") == NULL);
-    printf("[PC/GX] strip convert %s, batch cull %s\n",
-           s_strip_convert ? "on" : "off", s_batch_cull ? "on" : "off");
+    printf("[PC/GX] strip convert %s, batch cull %s, dl merge %s\n",
+           s_strip_convert ? "on" : "off", s_batch_cull ? "on" : "off",
+           s_dl_batch_merge ? "on" : "off");
     s_has_base_vertex = (glDrawElementsBaseVertex != NULL);
     s_stream_probe = 0;
     s_stream_offset = 0;
@@ -407,6 +464,11 @@ void pc_gx_init(void) {
 
     for (int i = 0; i < 4; i++)
         g_gx.projection_mtx[i][i] = 1.0f;
+
+    for (int i = 0; i < PC_GX_MAX_VTXFMT; i++) {
+        g_gx.vtx_fmt[i].position_type = GX_F32;
+        g_gx.vtx_fmt[i].position_count = GX_POS_XYZ;
+    }
 
     for (int i = 0; i < 10; i++) {
         g_gx.pos_mtx[i][0][0] = 1.0f;
@@ -506,6 +568,10 @@ void pc_gx_begin_frame(void) {
     memset(pc_gx_flush_reason, 0, sizeof(pc_gx_flush_reason));
     pc_gx_merged_batches = 0;
     pc_gx_culled_draws = 0;
+    pc_gx_dl_replay_time_us = 0;
+    pc_gx_dl_replay_bytes = 0;
+    pc_gx_dl_replay_vertices = 0;
+    pc_gx_dl_replay_calls = 0;
     s_flush_pending_attr = 0;
     g_pc_widescreen_stretch = 0;
 
@@ -737,6 +803,18 @@ void GXBegin(u32 primitive, u32 vtxfmt, u16 nverts) {
 
 void GXEnd(void) {
     int was_in_begin = g_gx.in_begin;
+
+    if (s_dl_batch_merge && s_dl_replaying && was_in_begin) {
+        /* Commit the final vertex, but leave the completed batch open.  A
+         * later state change or GXCopyDisp will flush it; an identical next
+         * display list can extend it through GXBegin's merge path. */
+        if (g_gx.vertex_pending) {
+            pc_gx_commit_vertex();
+            g_gx.vertex_pending = 0;
+        }
+        return;
+    }
+
     pc_gx_commit_pending_and_flush();
     if (g_pc_gx_dl.active && was_in_begin) {
         u32 op = PCGX_DL_OP_END;
@@ -744,7 +822,7 @@ void GXEnd(void) {
     }
 }
 
-void GXPosition3f32(f32 x, f32 y, f32 z) {
+static void pc_gx_apply_position3f32(f32 x, f32 y, f32 z) {
     /* Deferred commit: position call commits the previous vertex */
     if (g_gx.vertex_pending)
         pc_gx_commit_vertex();
@@ -779,6 +857,14 @@ void GXPosition3f32(f32 x, f32 y, f32 z) {
     g_gx.vertex_pending = 1;
 }
 
+void GXPosition3f32(f32 x, f32 y, f32 z) {
+    if (g_pc_gx_dl.active && g_pc_gx_dl.compact) {
+        PCGXDLPosition cmd = { { x, y, z } };
+        pc_gx_dl_write_command(PCGX_DL_OP_POSITION, &cmd, sizeof(cmd));
+    }
+    pc_gx_apply_position3f32(x, y, z);
+}
+
 void GXPosition3u16(u16 x, u16 y, u16 z) { GXPosition3f32((f32)x, (f32)y, (f32)z); }
 void GXPosition3s16(s16 x, s16 y, s16 z) { GXPosition3f32((f32)x, (f32)y, (f32)z); }
 void GXPosition3u8(u8 x, u8 y, u8 z) { GXPosition3f32((f32)x, (f32)y, (f32)z); }
@@ -790,19 +876,117 @@ void GXPosition2s16(s16 x, s16 y) { GXPosition3f32((f32)x, (f32)y, 0.0f); }
 void GXPosition2u8(u8 x, u8 y) { GXPosition3f32((f32)x, (f32)y, 0.0f); }
 void GXPosition2s8(s8 x, s8 y) { GXPosition3f32((f32)x, (f32)y, 0.0f); }
 
+static int pc_gx_position_component_size(int type) {
+    switch (type) {
+    case GX_U8:
+    case GX_S8:
+        return (int)sizeof(u8);
+    case GX_U16:
+    case GX_S16:
+        return (int)sizeof(u16);
+    case GX_F32:
+    default:
+        return (int)sizeof(f32);
+    }
+}
+
+static void pc_gx_read_position_index(u16 index, f32 out[3], size_t *element_size,
+                                      int *type_out, int *count_out, int *frac_out) {
+    const PCGXVertexFormat *fmt = &g_gx.vtx_fmt[g_gx.current_vtxfmt];
+    const u8 *base = (const u8 *)g_gx.array_base[GX_VA_POS];
+    int type = fmt->position_type;
+    int count = fmt->position_count == GX_POS_XY ? 2 : 3;
+    int frac = fmt->position_frac;
+    int component_size = pc_gx_position_component_size(type);
+    size_t stride = g_gx.array_stride[GX_VA_POS];
+    size_t offset = (size_t)index * stride;
+    const u8 *value = base + offset;
+
+    out[0] = 0.0f;
+    out[1] = 0.0f;
+    out[2] = 0.0f;
+    if (element_size)
+        *element_size = (size_t)count * (size_t)component_size;
+    if (type_out)
+        *type_out = type;
+    if (count_out)
+        *count_out = count;
+    if (frac_out)
+        *frac_out = frac;
+
+    switch (type) {
+    case GX_U8: {
+        const u8 *v = (const u8 *)value;
+        out[0] = ldexpf((f32)v[0], -frac);
+        out[1] = ldexpf((f32)v[1], -frac);
+        if (count > 2)
+            out[2] = ldexpf((f32)v[2], -frac);
+        break;
+    }
+    case GX_S8: {
+        const s8 *v = (const s8 *)value;
+        out[0] = ldexpf((f32)v[0], -frac);
+        out[1] = ldexpf((f32)v[1], -frac);
+        if (count > 2)
+            out[2] = ldexpf((f32)v[2], -frac);
+        break;
+    }
+    case GX_U16: {
+        const u16 *v = (const u16 *)value;
+        out[0] = ldexpf((f32)v[0], -frac);
+        out[1] = ldexpf((f32)v[1], -frac);
+        if (count > 2)
+            out[2] = ldexpf((f32)v[2], -frac);
+        break;
+    }
+    case GX_S16: {
+        const s16 *v = (const s16 *)value;
+        out[0] = ldexpf((f32)v[0], -frac);
+        out[1] = ldexpf((f32)v[1], -frac);
+        if (count > 2)
+            out[2] = ldexpf((f32)v[2], -frac);
+        break;
+    }
+    case GX_F32:
+    default: {
+        const f32 *v = (const f32 *)value;
+        out[0] = v[0];
+        out[1] = v[1];
+        if (count > 2)
+            out[2] = v[2];
+        break;
+    }
+    }
+}
+
 void GXPosition1x16(u16 index) {
+    if (g_pc_gx_dl.active && g_pc_gx_dl.compact) {
+        PCGXDLIndex cmd = { index, 0 };
+        pc_gx_dl_write_command(PCGX_DL_OP_POSITION_X16, &cmd, sizeof(cmd));
+        /* Keep the compact recorder's vertex accounting in step without
+         * dereferencing an array that may only be valid at replay time. */
+        pc_gx_apply_position3f32(0.0f, 0.0f, 0.0f);
+        return;
+    }
     if (g_gx.array_base[GX_VA_POS]) {
-        const u8* base = (const u8*)g_gx.array_base[GX_VA_POS];
-        const f32* pos = (const f32*)(base + index * g_gx.array_stride[GX_VA_POS]);
-        GXPosition3f32(pos[0], pos[1], pos[2]);
+        f32 pos[3];
+        pc_gx_read_position_index(index, pos, NULL, NULL, NULL, NULL);
+        pc_gx_apply_position3f32(pos[0], pos[1], pos[2]);
     }
 }
 void GXPosition1x8(u8 index) { GXPosition1x16(index); }
 
-void GXNormal3f32(f32 x, f32 y, f32 z) {
+static void pc_gx_apply_normal3f32(f32 x, f32 y, f32 z) {
     g_gx.current_vertex.normal[0] = x;
     g_gx.current_vertex.normal[1] = y;
     g_gx.current_vertex.normal[2] = z;
+}
+void GXNormal3f32(f32 x, f32 y, f32 z) {
+    if (g_pc_gx_dl.active && g_pc_gx_dl.compact) {
+        PCGXDLNormal cmd = { { x, y, z } };
+        pc_gx_dl_write_command(PCGX_DL_OP_NORMAL, &cmd, sizeof(cmd));
+    }
+    pc_gx_apply_normal3f32(x, y, z);
 }
 void GXNormal3s16(s16 x, s16 y, s16 z) {
     GXNormal3f32(x / 32767.0f, y / 32767.0f, z / 32767.0f);
@@ -811,29 +995,51 @@ void GXNormal3s8(s8 x, s8 y, s8 z) {
     GXNormal3f32(x / 127.0f, y / 127.0f, z / 127.0f);
 }
 void GXNormal1x16(u16 index) {
+    if (g_pc_gx_dl.active && g_pc_gx_dl.compact) {
+        PCGXDLIndex cmd = { index, 0 };
+        pc_gx_dl_write_command(PCGX_DL_OP_NORMAL_X16, &cmd, sizeof(cmd));
+        return;
+    }
     if (g_gx.array_base[GX_VA_NRM]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_NRM];
         const u8* value = base + index * g_gx.array_stride[GX_VA_NRM];
+        f32 nx;
+        f32 ny;
+        f32 nz;
         int type = g_gx.vtx_fmt[g_gx.current_vtxfmt].normal_type;
         if (type == GX_S8 || g_gx.array_stride[GX_VA_NRM] == 3) {
             const s8* nrm = (const s8*)value;
-            GXNormal3s8(nrm[0], nrm[1], nrm[2]);
+            nx = nrm[0] / 127.0f;
+            ny = nrm[1] / 127.0f;
+            nz = nrm[2] / 127.0f;
         } else if (type == GX_S16 || g_gx.array_stride[GX_VA_NRM] == 6) {
             const s16* nrm = (const s16*)value;
-            GXNormal3s16(nrm[0], nrm[1], nrm[2]);
+            nx = nrm[0] / 32767.0f;
+            ny = nrm[1] / 32767.0f;
+            nz = nrm[2] / 32767.0f;
         } else {
             const f32* nrm = (const f32*)value;
-            GXNormal3f32(nrm[0], nrm[1], nrm[2]);
+            nx = nrm[0];
+            ny = nrm[1];
+            nz = nrm[2];
         }
+        pc_gx_apply_normal3f32(nx, ny, nz);
     }
 }
 void GXNormal1x8(u8 index) { GXNormal1x16(index); }
 
-void GXColor4u8(u8 r, u8 g, u8 b, u8 a) {
+static void pc_gx_apply_color4u8(u8 r, u8 g, u8 b, u8 a) {
     g_gx.current_vertex.color0[0] = r;
     g_gx.current_vertex.color0[1] = g;
     g_gx.current_vertex.color0[2] = b;
     g_gx.current_vertex.color0[3] = a;
+}
+void GXColor4u8(u8 r, u8 g, u8 b, u8 a) {
+    if (g_pc_gx_dl.active && g_pc_gx_dl.compact) {
+        PCGXDLColor cmd = { { r, g, b, a } };
+        pc_gx_dl_write_command(PCGX_DL_OP_COLOR, &cmd, sizeof(cmd));
+    }
+    pc_gx_apply_color4u8(r, g, b, a);
 }
 void GXColor3u8(u8 r, u8 g, u8 b) { GXColor4u8(r, g, b, 255); }
 void GXColor1u32(u32 clr) {
@@ -841,10 +1047,15 @@ void GXColor1u32(u32 clr) {
 }
 void GXColor1u16(u16 clr) { GXColor1u32((u32)clr << 16); }
 void GXColor1x16(u16 index) {
+    if (g_pc_gx_dl.active && g_pc_gx_dl.compact) {
+        PCGXDLIndex cmd = { index, 0 };
+        pc_gx_dl_write_command(PCGX_DL_OP_COLOR_X16, &cmd, sizeof(cmd));
+        return;
+    }
     if (g_gx.array_base[GX_VA_CLR0]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_CLR0];
         const u8* clr = base + index * g_gx.array_stride[GX_VA_CLR0];
-        GXColor4u8(clr[0], clr[1], clr[2], clr[3]);
+        pc_gx_apply_color4u8(clr[0], clr[1], clr[2], clr[3]);
     }
 }
 void GXColor1x8(u8 index) { GXColor1x16(index); }
@@ -854,10 +1065,17 @@ void GXColor4f32(float r, float g, float b, float a) {
                (u8)(b * 255.0f + 0.5f), (u8)(a * 255.0f + 0.5f));
 }
 
-void GXTexCoord2f32(f32 s, f32 t) {
+static void pc_gx_apply_texcoord2f32(f32 s, f32 t) {
     /* Channel 0 only — emu64 emits one texcoord; multi-tex uses matrix transforms */
     g_gx.current_vertex.texcoord[0][0] = s;
     g_gx.current_vertex.texcoord[0][1] = t;
+}
+void GXTexCoord2f32(f32 s, f32 t) {
+    if (g_pc_gx_dl.active && g_pc_gx_dl.compact) {
+        PCGXDLTexCoord cmd = { { s, t } };
+        pc_gx_dl_write_command(PCGX_DL_OP_TEXCOORD, &cmd, sizeof(cmd));
+    }
+    pc_gx_apply_texcoord2f32(s, t);
 }
 void GXTexCoord2u16(u16 s, u16 t) { GXTexCoord2f32((f32)s, (f32)t); }
 void GXTexCoord2s16(s16 s, s16 t) {
@@ -874,10 +1092,15 @@ void GXTexCoord1u8(u8 s, u8 t) { GXTexCoord2f32((f32)s, (f32)t); }
 void GXTexCoord1s8(s8 s, s8 t) { GXTexCoord2f32((f32)s, (f32)t); }
 
 void GXTexCoord1x16(u16 index) {
+    if (g_pc_gx_dl.active && g_pc_gx_dl.compact) {
+        PCGXDLIndex cmd = { index, 0 };
+        pc_gx_dl_write_command(PCGX_DL_OP_TEXCOORD_X16, &cmd, sizeof(cmd));
+        return;
+    }
     if (g_gx.array_base[GX_VA_TEX0]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_TEX0];
         const f32* tc = (const f32*)(base + index * g_gx.array_stride[GX_VA_TEX0]);
-        GXTexCoord2f32(tc[0], tc[1]);
+        pc_gx_apply_texcoord2f32(tc[0], tc[1]);
     }
 }
 void GXTexCoord1x8(u8 index) { GXTexCoord1x16(index); }
@@ -1478,9 +1701,20 @@ void pc_gx_flush_vertices(void) {
 
 /* Called from VIWaitForRetrace to snapshot & reset per-frame timing */
 void pc_gx_frame_timing_snapshot(void) {
+    static int timing_trace = -1;
     Uint64 freq = SDL_GetPerformanceFrequency();
     pc_gx_flush_time_us  = s_flush_time_acc * 1000000 / freq;
     pc_gx_texload_time_us = s_texload_time_acc * 1000000 / freq;
+    if (timing_trace < 0)
+        timing_trace = getenv("PARTYBOARD_GX_TIMING") != NULL;
+    if (timing_trace) {
+        printf("[PM/GXTIME] flush=%lluus texload=%lluus dl=%lluus calls=%d bytes=%lluu verts=%lluu\n",
+            (unsigned long long)pc_gx_flush_time_us,
+            (unsigned long long)pc_gx_texload_time_us,
+            pc_gx_dl_replay_time_us, pc_gx_dl_replay_calls,
+            pc_gx_dl_replay_bytes, pc_gx_dl_replay_vertices);
+        fflush(stdout);
+    }
     s_flush_time_acc = 0;
     s_texload_time_acc = 0;
 }
@@ -1500,6 +1734,12 @@ void GXClearVtxDesc(void) { memset(g_gx.vtx_desc, 0, sizeof(g_gx.vtx_desc)); }
 
 void GXSetVtxAttrFmt(u32 vtxfmt, u32 attr, u32 cnt, u32 type, u8 frac) {
     if (vtxfmt >= GX_MAX_VTXFMT) return;
+    if (attr == GX_VA_POS) {
+        g_gx.vtx_fmt[vtxfmt].position_type = (int)type;
+        g_gx.vtx_fmt[vtxfmt].position_count = (int)cnt;
+        g_gx.vtx_fmt[vtxfmt].position_frac = (int)frac;
+        g_gx.vtx_fmt[vtxfmt].has_position = 1;
+    }
     if (attr == GX_VA_NRM) {
         g_gx.vtx_fmt[vtxfmt].normal_type = (int)type;
         g_gx.vtx_fmt[vtxfmt].normal_count = (int)cnt;
@@ -1515,6 +1755,7 @@ void GXSetArray(u32 attr, const void* data, u32 size, u8 stride) {
     if (attr < GX_VA_MAX_ATTR) {
         g_gx.array_base[attr] = data;
         g_gx.array_stride[attr] = stride;
+        (void)size;
     }
 }
 
@@ -2612,10 +2853,19 @@ int IsWriteGatherBufferEmpty(void) { return 1; }
 void GXBeginDisplayList(void* list, u32 size) {
     pc_gx_commit_pending_and_flush();
     g_pc_gx_dl.active = 1;
+    /* The compact command stream is useful for capacity experiments, but the
+     * resolved-vertex path remains the correctness baseline until every
+     * indexed-array caller has been validated on the handheld. */
+    g_pc_gx_dl.compact = s_dl_compact_override >= 0
+        ? s_dl_compact_override : (getenv("PCGX_DL_COMPACT") != NULL);
+    s_dl_compact_override = -1;
     g_pc_gx_dl.buf = (u8*)list;
     g_pc_gx_dl.size = size;
     g_pc_gx_dl.off = 0;
     g_pc_gx_dl.overflow = 0;
+}
+void pc_gx_display_list_set_compact(int enabled) {
+    s_dl_compact_override = enabled ? 1 : 0;
 }
 u32 GXEndDisplayList(void) {
     if (g_pc_gx_dl.active && g_gx.in_begin)
@@ -2625,6 +2875,7 @@ u32 GXEndDisplayList(void) {
         nbytes = g_pc_gx_dl.off;
     }
     g_pc_gx_dl.active = 0;
+    g_pc_gx_dl.compact = 0;
     g_pc_gx_dl.buf = NULL;
     g_pc_gx_dl.size = 0;
     g_pc_gx_dl.off = 0;
@@ -2633,6 +2884,14 @@ u32 GXEndDisplayList(void) {
 }
 void GXCallDisplayList(void* list, u32 nbytes) {
     if (!list || nbytes == 0) return;
+
+    unsigned long long stats_start = 0;
+    u32 vertex_ops = 0;
+    static int s_dl_stats = -1;
+    if (s_dl_stats < 0)
+        s_dl_stats = getenv("PARTYBOARD_DL_STATS") != NULL;
+    if (s_dl_stats)
+        stats_start = pc_prof_now_us();
 
     const u8* p = (const u8*)list;
     u32 off = 0;
@@ -2680,11 +2939,76 @@ void GXCallDisplayList(void* list, u32 nbytes) {
                 GXBegin(begin.primitive, begin.vtxfmt, begin.nverts);
                 break;
             }
+            case PCGX_DL_OP_POSITION: {
+                PCGXDLPosition cmd;
+                if (off + sizeof(cmd) > nbytes) return;
+                memcpy(&cmd, p + off, sizeof(cmd));
+                off += sizeof(cmd);
+                GXPosition3f32(cmd.value[0], cmd.value[1], cmd.value[2]);
+                break;
+            }
+            case PCGX_DL_OP_POSITION_X16: {
+                PCGXDLIndex cmd;
+                if (off + sizeof(cmd) > nbytes) return;
+                memcpy(&cmd, p + off, sizeof(cmd));
+                off += sizeof(cmd);
+                GXPosition1x16(cmd.index);
+                break;
+            }
+            case PCGX_DL_OP_NORMAL: {
+                PCGXDLNormal cmd;
+                if (off + sizeof(cmd) > nbytes) return;
+                memcpy(&cmd, p + off, sizeof(cmd));
+                off += sizeof(cmd);
+                GXNormal3f32(cmd.value[0], cmd.value[1], cmd.value[2]);
+                break;
+            }
+            case PCGX_DL_OP_NORMAL_X16: {
+                PCGXDLIndex cmd;
+                if (off + sizeof(cmd) > nbytes) return;
+                memcpy(&cmd, p + off, sizeof(cmd));
+                off += sizeof(cmd);
+                GXNormal1x16(cmd.index);
+                break;
+            }
+            case PCGX_DL_OP_COLOR: {
+                PCGXDLColor cmd;
+                if (off + sizeof(cmd) > nbytes) return;
+                memcpy(&cmd, p + off, sizeof(cmd));
+                off += sizeof(cmd);
+                GXColor4u8(cmd.value[0], cmd.value[1], cmd.value[2], cmd.value[3]);
+                break;
+            }
+            case PCGX_DL_OP_COLOR_X16: {
+                PCGXDLIndex cmd;
+                if (off + sizeof(cmd) > nbytes) return;
+                memcpy(&cmd, p + off, sizeof(cmd));
+                off += sizeof(cmd);
+                GXColor1x16(cmd.index);
+                break;
+            }
+            case PCGX_DL_OP_TEXCOORD: {
+                PCGXDLTexCoord cmd;
+                if (off + sizeof(cmd) > nbytes) return;
+                memcpy(&cmd, p + off, sizeof(cmd));
+                off += sizeof(cmd);
+                GXTexCoord2f32(cmd.value[0], cmd.value[1]);
+                break;
+            }
+            case PCGX_DL_OP_TEXCOORD_X16: {
+                PCGXDLIndex cmd;
+                if (off + sizeof(cmd) > nbytes) return;
+                memcpy(&cmd, p + off, sizeof(cmd));
+                off += sizeof(cmd);
+                GXTexCoord1x16(cmd.index);
+                break;
+            }
             case PCGX_DL_OP_VERTEX: {
                 PCGXVertex vertex;
                 if (off + sizeof(vertex) > nbytes) return;
                 memcpy(&vertex, p + off, sizeof(vertex));
                 off += sizeof(vertex);
+                vertex_ops++;
                 if (!g_gx.in_begin) return;
                 if (g_gx.vertex_pending)
                     pc_gx_commit_vertex();
@@ -2693,11 +3017,19 @@ void GXCallDisplayList(void* list, u32 nbytes) {
                 break;
             }
             case PCGX_DL_OP_END:
+                s_dl_replaying = 1;
                 GXEnd();
+                s_dl_replaying = 0;
                 break;
             default:
                 return;
         }
+    }
+    if (s_dl_stats) {
+        pc_gx_dl_replay_time_us += pc_prof_now_us() - stats_start;
+        pc_gx_dl_replay_bytes += nbytes;
+        pc_gx_dl_replay_vertices += vertex_ops;
+        pc_gx_dl_replay_calls++;
     }
 }
 

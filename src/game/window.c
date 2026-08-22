@@ -1010,9 +1010,6 @@ static void HuWinChoice(WindowData *window)
     choice_next = choice_curr;
     dir = -1;
     key = HuWinActivePadGet(window);
-    if (key != 0) {
-        OSReport("[PM/WIN] choice input key=0x%03x current=%d\n", key, choice_curr);
-    }
     if (key & 1) {
         dir = 0;
     }
@@ -1160,17 +1157,14 @@ static void HuWinChoice(WindowData *window)
     }
     if (window->choice != choice_next) {
         window->choice = choice_next;
-        OSReport("[PM/WIN] choice move current=%d next=%d\n", choice_curr, choice_next);
         HuAudFXPlay(0);
     }
     else if (key & (VERSION_JP ? PAD_BUTTON_A : (window->key_auto | PAD_BUTTON_A))) {
-        OSReport("[PM/WIN] choice accept=%d\n", choice_next);
         HuAudFXPlay(2);
         window->key_down = key;
         window->stat = 0;
     }
     else if ((key & PAD_BUTTON_B) && !(window->attr & 0x10)) {
-        OSReport("[PM/WIN] choice cancel\n");
         HuAudFXPlay(3);
 #if !VERSION_JP
         window->key_down = key;
@@ -1471,9 +1465,6 @@ s16 HuWinChoiceGet(s16 window, s16 start_choice)
     while (window_ptr->stat != 0) {
         HuPrcVSleep();
     }
-#ifdef PARTY_BOARD_PORTMASTER
-    OSReport("[PM/WIN] choice ready window=%d start=%d count=%d\n", window, start_choice, window_ptr->num_choices);
-#endif
     for (; start_choice < window_ptr->num_choices; start_choice++) {
         if (!(window_ptr->choice_data[start_choice].stat & 1)) {
             break;

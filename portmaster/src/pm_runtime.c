@@ -218,11 +218,26 @@ static int create_window(void)
     SDL_GL_GetDrawableSize(g_pc_window, &g_pc_window_w, &g_pc_window_h);
     g_pc_render_w = g_pc_window_w;
     g_pc_render_h = g_pc_window_h;
+    {
+        const char *scale_text = getenv("PARTYBOARD_RENDER_SCALE");
+        if (scale_text != NULL && *scale_text != '\0') {
+            float scale = strtof(scale_text, NULL);
+            if (scale >= 0.25f && scale < 1.0f) {
+                g_pc_render_w = (int)(g_pc_window_w * scale) & ~1;
+                g_pc_render_h = (int)(g_pc_window_h * scale) & ~1;
+                if (g_pc_render_w < 2) g_pc_render_w = 2;
+                if (g_pc_render_h < 2) g_pc_render_h = 2;
+            }
+        }
+    }
     printf("[PM] video=%s renderer=%s version=%s drawable=%dx%d\n",
            SDL_GetCurrentVideoDriver() != NULL ? SDL_GetCurrentVideoDriver() : "none",
            (const char *)glGetString(GL_RENDERER),
            (const char *)glGetString(GL_VERSION),
            g_pc_window_w, g_pc_window_h);
+    if (g_pc_render_w != g_pc_window_w || g_pc_render_h != g_pc_window_h) {
+        printf("[PM] render scale target=%dx%d\n", g_pc_render_w, g_pc_render_h);
+    }
     return 1;
 }
 

@@ -33,8 +33,8 @@ f32 frandf(void) {
     return ret;
 }
 
-u32 frandmod(u32 arg0) {
-    u32 ret;
+s32 frandmod(u32 arg0) {
+    s32 ret;
     frand_seed = frandom(frand_seed);
 #ifdef TARGET_PC
     if (arg0 == 0) {

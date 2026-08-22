@@ -30,6 +30,7 @@
 #include <aurora/event.h>
 #else
 #include "pc_platform.h"
+#include "pc_prof.h"
 #endif
 #include <stdlib.h>
 
@@ -183,14 +184,42 @@ void main(void)
         GXClearMemMetric();
 
         HuPerfBegin(0);
+#ifdef PARTY_BOARD_PORTMASTER
+        PC_PROF("preproc", 0, Hu3DPreProc());
+        PC_PROF("pad", 0, HuPadRead());
+#else
         Hu3DPreProc();
         HuPadRead();
+#endif
         pfClsScr();
 
+#ifdef PARTY_BOARD_PORTMASTER
+        PC_PROF("process", 0, HuPrcCall(1));
+#else
         HuPrcCall(1);
+#endif
         MGSeqMain();
         HuPerfBegin(1);
+#ifdef PARTY_BOARD_PORTMASTER
+        PC_PROF("3dexec", 0, Hu3DExec());
+#else
         Hu3DExec();
+#endif
+#ifdef PARTY_BOARD_PORTMASTER
+        {
+            static int gx_trace = -1;
+            if (gx_trace < 0) {
+                gx_trace = getenv("PARTYBOARD_GX_TRACE") != NULL;
+            }
+            if (gx_trace && (pc_frame_counter % 10u) == 0u) {
+                printf("[PM/GX] frame=%u draws=%d quads=%d tris=%d strips=%d fans=%d other=%d merged=%d\n",
+                    pc_frame_counter, pc_gx_draw_call_count,
+                    pc_gx_prim_draws[0], pc_gx_prim_draws[1], pc_gx_prim_draws[2],
+                    pc_gx_prim_draws[3], pc_gx_prim_draws[4], pc_gx_merged_batches);
+                fflush(stdout);
+            }
+        }
+#endif
         HuDvdErrorWatch();
         WipeExecAlways();
         HuPerfEnd(0);
@@ -199,7 +228,11 @@ void main(void)
         HuPerfEnd(1);
 
         msmMusFdoutEnd();
+#ifdef PARTY_BOARD_PORTMASTER
+        PC_PROF("render_done", 0, HuSysDoneRender(retrace));
+#else
         HuSysDoneRender(retrace);
+#endif
         GXReadGPMetric(&met0, &met1);
         GXReadVCacheMetric(&vcheck, &vmiss, &vstall);
         GXReadPixMetric(&top_pixels_in, &top_pixels_out, &bot_pixels_in, &bot_pixels_out, &clr_pixels_in, &total_copy_clks);

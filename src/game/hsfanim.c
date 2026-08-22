@@ -8,6 +8,9 @@
 
 #include "ext_math.h"
 #include <string.h>
+#ifdef PARTY_BOARD_PORTMASTER
+#include "pc_platform.h"
+#endif
 
 #ifndef __MWERKS__
 #include "game/frand.h"
@@ -497,6 +500,7 @@ s16 Hu3DParticleCreate(ANIMDATA *anim, s16 maxCnt)
     s16 modelId;
     s16 i;
     void *dlBuf;
+    u32 dlCapacity = 0x20000;
 
     modelId = Hu3DHookFuncCreate((void *)&particleFunc);
     modelP = &Hu3DData[modelId];
@@ -530,10 +534,29 @@ s16 Hu3DParticleCreate(ANIMDATA *anim, s16 maxCnt)
     for (i = 0; i < maxCnt * 4; i++, vtxBuf++) {
         vtxBuf->x = vtxBuf->y = vtxBuf->z = 0.0f;
     }
+#ifdef PARTY_BOARD_PORTMASTER
+    /* The original GX FIFO stores compact indexed commands.  The PortMaster
+     * shim's resolved-vertex display-list records use 52 bytes per vertex;
+     * each particle contributes four vertices, so reserve 0xD0 per particle
+     * plus room for the begin/end records. */
+    dlCapacity = maxCnt * 0xD0 + 0x80;
+    dlBuf = HuMemDirectMallocNum(HEAP_DATA, dlCapacity, modelP->mallocNo);
+#else
     dlBuf = HuMemDirectMallocNum(HEAP_DATA, maxCnt * 0x60 + 0x80, modelP->mallocNo);
+#endif
     particleP->dlBuf = dlBuf;
+#ifdef PARTY_BOARD_PORTMASTER
+    DCInvalidateRange(dlBuf, maxCnt * 0xD0 + 0x80);
+#else
     DCInvalidateRange(dlBuf, maxCnt * 0x60 + 0x80);
-    GXBeginDisplayList(dlBuf, 0x20000);
+#endif
+#ifdef PARTY_BOARD_PORTMASTER
+    /* Particle positions are updated after this list is created. Preserve
+     * the indexed GX commands so replay resolves the current particle array
+     * instead of capturing whatever mesh array happened to be bound here. */
+    pc_gx_display_list_set_compact(1);
+#endif
+    GXBeginDisplayList(dlBuf, dlCapacity);
     GXBegin(GX_QUADS, GX_VTXFMT0, maxCnt * 4);
     for (i = 0; i < maxCnt; i++) {
         GXPosition1x16(i*4);

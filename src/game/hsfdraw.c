@@ -2655,6 +2655,39 @@ static void MDObjMesh(HSFDATA *hsf, HSFOBJECT *objPtr) {
     if (objPtr->flags & HSF_MATERIAL_HILITE) {
         Hu3DObjInfoP->attr |= HU3D_CONST_HILITE;
     }
+#ifdef PARTY_BOARD_PORTMASTER
+    /* MDFaceDraw resolves indexed GX attributes while it builds the
+     * PortMaster display-list replay records.  The original GX path leaves
+     * array binding to the later draw call, but resolving here with whatever
+     * mesh happened to bind previously can read unrelated vertex data. */
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_INDEX16);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSETARRAY(GX_VA_POS, objPtr->mesh.vertex->data,
+               objPtr->mesh.vertex->count * sizeof(Vec), sizeof(Vec), TRUE);
+    GXSetVtxDesc(GX_VA_NRM, GX_INDEX16);
+    if (objPtr->mesh.cenvNum == 0) {
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 0);
+        GXSETARRAY(GX_VA_NRM, objPtr->mesh.normal->data,
+                   objPtr->mesh.normal->count * 3, 3, TRUE);
+    } else {
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
+        GXSETARRAY(GX_VA_NRM, objPtr->mesh.normal->data,
+                   objPtr->mesh.normal->count * sizeof(Vec), sizeof(Vec), TRUE);
+    }
+    if (objPtr->mesh.st != NULL) {
+        GXSetVtxDesc(GX_VA_TEX0, GX_INDEX16);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+        GXSETARRAY(GX_VA_TEX0, objPtr->mesh.st->data,
+                   objPtr->mesh.st->count * sizeof(Vec2f), sizeof(Vec2f), TRUE);
+    }
+    if (objPtr->mesh.color != NULL) {
+        GXSetVtxDesc(GX_VA_CLR0, GX_INDEX16);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GXSETARRAY(GX_VA_CLR0, objPtr->mesh.color->data,
+                   objPtr->mesh.color->count * sizeof(GXColor), sizeof(GXColor), TRUE);
+    }
+#endif
     for (i = 0; i < faceBuf->count; i++, facePtr++) {
         MDFaceDraw(objPtr, facePtr);
     }
@@ -2694,7 +2727,21 @@ static void MDFaceDraw(HSFOBJECT *objPtr, HSFFACE *face) {
         polyTypeBak = face->type & 7;
         materialBak = matP;
         DrawData[drawCnt].dlOfs = (uintptr_t)DLBufP - (uintptr_t)DLBufStartP;
+#ifdef PARTY_BOARD_PORTMASTER
+        /* The original display-list builder uses one fixed GX FIFO limit,
+         * but the shim stores resolved vertices and can represent the whole
+         * remaining per-object allocation.  Passing the remaining capacity
+         * prevents a large material group from returning a zero-sized list
+         * and causing the next group to overwrite the same buffer. */
+        {
+            uintptr_t dlOffset = (uintptr_t)DLBufP - (uintptr_t)DLBufStartP;
+            u32 dlCapacity = dlOffset < (uintptr_t)DLTotalNum
+                ? (u32)((uintptr_t)DLTotalNum - dlOffset) : 0;
+            GXBeginDisplayList(DLBufP, dlCapacity);
+        }
+#else
         GXBeginDisplayList(DLBufP, 0x20000);
+#endif
         GXResetWriteGatherPipe();
         if (matP->attrNum == 0) {
             stF = FALSE;

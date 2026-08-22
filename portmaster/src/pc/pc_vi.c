@@ -1,5 +1,6 @@
 /* GameCube VI replacement: SDL2 swap, input pumping, and 60 Hz pacing. */
 #include "pc_platform.h"
+#include "pc_prof.h"
 #include <dolphin/vi.h>
 
 static u32 retrace_count;
@@ -9,6 +10,8 @@ static VIRetraceCallback pre_retrace_callback;
 static VIRetraceCallback post_retrace_callback;
 static Uint64 last_retrace_ticks;
 static Uint64 performance_frequency;
+static int vi_trace = -1;
+static unsigned long long vi_t0;
 
 u32 pc_frame_counter;
 
@@ -62,6 +65,9 @@ static void pace_retrace(void)
 
 void VIWaitForRetrace(void)
 {
+    if (vi_trace < 0) {
+        vi_trace = getenv("PARTYBOARD_VI_TRACE") != NULL;
+    }
     if (!g_pc_running) {
         return;
     }
@@ -75,8 +81,26 @@ void VIWaitForRetrace(void)
         pre_retrace_callback(retrace_count);
     }
 
+    pc_gx_frame_timing_snapshot();
+
+    if (vi_trace && (retrace_count % 10u) == 0u) {
+        printf("[PM/VI] frame=%u before_blit\n", retrace_count);
+        fflush(stdout);
+    }
+    if (vi_trace) vi_t0 = pc_prof_now_us();
     pc_gx_blit_to_screen();
+    if (vi_trace && (retrace_count % 10u) == 0u) {
+        printf("[PM/VI] frame=%u after_blit us=%llu\n", retrace_count,
+               pc_prof_now_us() - vi_t0);
+        fflush(stdout);
+    }
+    if (vi_trace) vi_t0 = pc_prof_now_us();
     SDL_GL_SwapWindow(g_pc_window);
+    if (vi_trace && (retrace_count % 10u) == 0u) {
+        printf("[PM/VI] frame=%u after_swap us=%llu\n", retrace_count,
+               pc_prof_now_us() - vi_t0);
+        fflush(stdout);
+    }
     pace_retrace();
 
     current_framebuffer = next_framebuffer;

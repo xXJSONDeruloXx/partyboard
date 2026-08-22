@@ -82,6 +82,7 @@ add_executable(partyboard-portmaster-gx-probe
     src/pc/pc_gx.c
     src/pc/pc_gx_tev.c
     src/pc/pc_gx_texture.c
+    src/pc/pc_prof.c
 )
 target_compile_definitions(partyboard-portmaster-gx-probe PRIVATE
     TARGET_PC

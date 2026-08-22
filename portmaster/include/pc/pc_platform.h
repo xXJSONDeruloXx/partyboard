@@ -67,12 +67,22 @@ extern int g_pc_model_viewer_no_cull;
 
 extern u32 pc_frame_counter;
 extern int pc_gx_draw_call_count;
+extern int pc_gx_prim_draws[5];
+extern int pc_gx_merged_batches;
+extern unsigned long long pc_gx_dl_replay_time_us;
+extern unsigned long long pc_gx_dl_replay_bytes;
+extern unsigned long long pc_gx_dl_replay_vertices;
+extern int pc_gx_dl_replay_calls;
 
 extern u8 *pc_arena_base;
 extern u8 *pc_arena_end;
 
 void pc_gx_blit_to_screen(void);
 void pc_gx_begin_frame(void);
+void pc_gx_frame_timing_snapshot(void);
+/* Use indexed GX commands for the next display list. Dynamic lists such as
+ * particles must resolve their arrays at replay time, not during creation. */
+void pc_gx_display_list_set_compact(int enabled);
 void pc_platform_poll_events(void);
 void pc_platform_set_run_limit(double seconds);
 

@@ -55,6 +55,9 @@ void pc_gx_mark_dirty(unsigned int flag);
 
 typedef struct {
     int has_position;
+    int position_type;
+    int position_count;
+    int position_frac;
     int has_normal;
     int normal_type;
     int normal_count;

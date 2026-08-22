@@ -20,6 +20,9 @@ GAMEDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 cd "$GAMEDIR" || exit 1
 
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
+# The RG28XX Mali path currently cannot replay the GameCube shadow copy pass
+# reliably; keep the tested no-shadow renderer as the package default.
+export PARTYBOARD_DISABLE_SHADOW=1
 
 $GPTOKEYB partyboard-portmaster -c partyboard-portmaster.gptk &
 GPTOKEYB_PID=$!

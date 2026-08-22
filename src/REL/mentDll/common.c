@@ -860,21 +860,10 @@ void fn_1_5C08(omObjData *arg0)
 
 void fn_1_5CDC(omObjData *arg0, s32 arg1, s32 arg2)
 {
-    s32 waitCount = 0;
-    OSReport("[PM/MENT] motion wait start model=%d max=%.2f time=%.2f\n",
-        arg0->model[arg1], Hu3DMotionMaxTimeGet(arg0->model[arg1]),
-        Hu3DMotionTimeGet(arg0->model[arg1]));
     HuPrcSleep(arg2 + 1);
     do {
-        if ((waitCount++ & 0x3F) == 0) {
-            OSReport("[PM/MENT] motion wait iter=%d max=%.2f time=%.2f\n",
-                waitCount, Hu3DMotionMaxTimeGet(arg0->model[arg1]),
-                Hu3DMotionTimeGet(arg0->model[arg1]));
-        }
         HuPrcVSleep();
     } while (Hu3DMotionEndCheck(arg0->model[arg1]) == 0);
-    OSReport("[PM/MENT] motion wait complete iter=%d time=%.2f\n",
-        waitCount, Hu3DMotionTimeGet(arg0->model[arg1]));
 }
 
 void fn_1_5D38(omObjData *arg0, s32 arg1, Vec arg2, float arg8, float arg9, float argA, s32 arg3, s32 arg4)
