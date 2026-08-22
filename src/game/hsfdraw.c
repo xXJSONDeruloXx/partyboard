@@ -2619,7 +2619,16 @@ static void MDObjMesh(HSFDATA *hsf, HSFOBJECT *objPtr) {
     for (i = 0; i < faceBuf->count; i++, facePtr++) {
         MDFaceCnt(objPtr, facePtr);
     }
+#ifdef PARTY_BOARD_PORTMASTER
+    /* The original GX FIFO stores compact commands (the estimator above
+     * assumes roughly four bytes per vertex).  The PortMaster GX shim keeps
+     * resolved vertices in its process-local display-list format instead,
+     * using 52 bytes per vertex plus begin/end records.  Reserve the larger
+     * backing store before MDFaceDraw writes those records. */
+    DLTotalNum = (DLTotalNum * 13 + 0x40) & ~0x1F;
+#else
     DLTotalNum = (DLTotalNum + 0x40) & ~0x1F;
+#endif
     Hu3DObjInfoP = ObjConstantMake(objPtr, mallocNo);
     Hu3DObjInfoP->drawData = DrawData = HuMemDirectMallocNum(HEAP_DATA, matChgCnt * sizeof(HSFDRAWDATA), mallocNo);
     memset(DrawData, 0, matChgCnt * sizeof(HSFDRAWDATA));

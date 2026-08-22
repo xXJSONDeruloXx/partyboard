@@ -19,14 +19,18 @@
 
 #ifdef TARGET_PC
 #include "game/disp.h"
+#include "port/main.h"
+#ifndef PARTY_BOARD_PORTMASTER
 #include "port/settings.h"
 #include "port/imgui.h"
-#include "port/main.h"
 #include "port/dolassets.h"
 #include "port/ui.h"
 #include "aurora/dvd.h"
 #include <aurora/aurora.h>
 #include <aurora/event.h>
+#else
+#include "pc_platform.h"
+#endif
 #include <stdlib.h>
 
 const char *__asan_default_options()
@@ -125,6 +129,11 @@ void main(void)
     while (1) {
 #endif
 #ifdef TARGET_PC
+#ifdef PARTY_BOARD_PORTMASTER
+        if (!g_pc_running) {
+            PartyBoard_IsRunning = FALSE;
+        }
+#else
         const AuroraEvent *event = aurora_update();
         bool exiting = false;
         while (event != NULL && event->type != AURORA_NONE) {
@@ -152,6 +161,7 @@ void main(void)
             break;
         }
 #endif
+#endif
         retrace = VIGetRetraceCount();
         if (HuSoftResetButtonCheck() != 0 || HuDvdErrWait != 0) {
             continue;
@@ -160,7 +170,9 @@ void main(void)
 
         HuPerfBegin(2);
 #ifdef TARGET_PC
+#ifndef PARTY_BOARD_PORTMASTER
         aurora_begin_frame();
+#endif
 #endif
         HuSysBeforeRender();
         GXSetGPMetric(GX_PERF0_CLIP_VTX, GX_PERF1_VERTICES);
@@ -196,11 +208,13 @@ void main(void)
         GlobalCounter++;
 
 #ifdef TARGET_PC
+#ifndef PARTY_BOARD_PORTMASTER
         ui_update();
         aurora_end_frame();
         if (!disableFrameLimiter) {
             frame_limiter();
         }
+#endif
 #endif
     }
 

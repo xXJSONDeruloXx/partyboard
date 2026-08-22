@@ -15,8 +15,12 @@ static void MountCallBack(s32 chan, s32 result);
 void HuCardInit(void)
 {
 #ifdef TARGET_PC
+#ifdef PARTY_BOARD_PORTMASTER
+	CARDInit("Party Board", "mariopartyrd");
+#else
         CARDSetLoadType(partyboard_settings_card_file_type());
         CARDInit("Party Board", "mariopartyrd");
+#endif
 #else
 	CARDInit();
 #endif

@@ -584,6 +584,7 @@ static char* generate_frag(PCGXState* st) {
 static GLuint s_fallback = 0;
 static PCGXUniformLocs s_fallback_locs;
 static unsigned int s_fallback_gens[PC_GX_UNIFORM_GROUP_COUNT];
+static int s_specialized_enabled = 1;
 
 /* ===================================================================
  * Program binary disk cache (shader_cache.bin in the working dir,
@@ -797,6 +798,10 @@ static void sdc_warm_from_seed(void) {
  * Public API
  * =================================================================== */
 void pc_gx_tev_init(void) {
+    s_specialized_enabled = getenv("PC_NO_TEV_SPECIALIZED") == NULL;
+    printf("[PC/TEV] specialized shaders %s\n",
+           s_specialized_enabled ? "enabled" : "disabled");
+
     /* Compile vertex shader once (kept alive for all programs) */
     char* vs_src = load_shader("default.vert");
     if (!vs_src) {
@@ -851,6 +856,12 @@ void pc_gx_tev_shutdown(void) {
 }
 
 GLuint pc_gx_tev_get_shader(PCGXState* state) {
+    if (!s_specialized_enabled) {
+        pc_gx_tev_last_locs = &s_fallback_locs;
+        pc_gx_tev_last_gens = s_fallback_gens;
+        return s_fallback;
+    }
+
     ShaderKey key;
     build_key(state, &key);
 

@@ -417,30 +417,52 @@ s32 lbl_1_data_2B4[0xF] = {
 
 void fn_1_7218(void)
 {
+    s32 waitCount = 0;
+    OSReport("[PM/MENT] board prefetch start board=%d\n", GWSystem.board);
     s32 var_r31 = HuDataDirReadAsync(DATADIR_BOARD);
+
+    OSReport("[PM/MENT] board read stat=%d\n", var_r31);
 
     if (var_r31 != -1) {
         while (HuDataGetAsyncStat(var_r31) == 0) {
+            if ((waitCount++ & 0x3F) == 0) {
+                OSReport("[PM/MENT] board read wait stat=%d iter=%d\n", var_r31, waitCount);
+            }
             HuPrcVSleep();
         }
     }
+    OSReport("[PM/MENT] board read complete\n");
     HuAR_MRAMtoARAM(DATADIR_BOARD);
+    OSReport("[PM/MENT] board aram copy submitted\n");
+    waitCount = 0;
     while (HuARDMACheck() != 0) {
+        if ((waitCount++ & 0x3F) == 0) {
+            OSReport("[PM/MENT] board aram wait iter=%d\n", waitCount);
+        }
         HuPrcVSleep();
     }
+    OSReport("[PM/MENT] board aram copy complete\n");
     HuDataDirClose(DATADIR_BOARD);
     if (_CheckFlag(FLAG_ID_MAKE(1, 11)) != 0) {
         var_r31 = HuDataDirReadAsync(DATADIR_W10);
+        OSReport("[PM/MENT] W10 read stat=%d\n", var_r31);
     }
     else {
         var_r31 = HuDataDirReadAsync(lbl_1_data_2B4[GWSystem.board]);
+        OSReport("[PM/MENT] board-specific read dir=%x stat=%d\n", lbl_1_data_2B4[GWSystem.board], var_r31);
     }
+    waitCount = 0;
     if (var_r31 != -1) {
         while (HuDataGetAsyncStat(var_r31) == 0) {
+            if ((waitCount++ & 0x3F) == 0) {
+                OSReport("[PM/MENT] board-specific wait stat=%d iter=%d\n", var_r31, waitCount);
+            }
             HuPrcVSleep();
         }
     }
+    OSReport("[PM/MENT] board-specific read complete\n");
     lbl_1_bss_D8 = 1;
+    OSReport("[PM/MENT] board prefetch ready\n");
     HuPrcEnd();
     while (1) {
         HuPrcVSleep();
@@ -1454,6 +1476,7 @@ s32 fn_1_A3BC(void)
     var_r26 = -1;
     var_r30 = lbl_1_bss_A8[2];
     var_r31 = fn_1_1434(0, 0, 0);
+    OSReport("[PM/MENT] settings begin board=%d\n", var_r30);
     if (var_r30 == 0) {
         HuAudFXPlay(lbl_1_data_0[var_r30][2]);
     }
@@ -1553,6 +1576,7 @@ loop_4:
         HuAudFXPlay(lbl_1_data_0[var_r30][2]);
         fn_1_1968(var_r31, 0x1B0000, -1, 5);
         var_r28 = fn_1_1A5C(0x1E0035, 3, 0);
+        OSReport("[PM/MENT] settings confirm result=%d\n", var_r28);
         if (var_r28 == 0) {
             var_r29 = 0x63;
         }
@@ -1587,6 +1611,7 @@ void fn_1_A9B0(void)
     s32 var_r28;
 
     var_r30 = lbl_1_bss_A8[2];
+    OSReport("[PM/MENT] A9B0 begin board=%d\n", var_r30);
     {
         Vec sp14 = { -120.0f, 0.0f, 670.0f };
         if (lbl_1_bss_A8[2] == 5) {
@@ -1611,23 +1636,32 @@ void fn_1_A9B0(void)
         fn_1_5818(lbl_1_bss_33AC[var_r30].unk_00, 1, 1, 0xF, 1);
         HuDataDirClose(DATADIR_MENT);
         HuPrcChildCreate(fn_1_7218, 0x64, 0x3000, 0, lbl_1_bss_C8);
+        OSReport("[PM/MENT] A9B0 prefetch child created\n");
         fn_1_4B0(0x1E);
+        OSReport("[PM/MENT] A9B0 first sleep complete\n");
         fn_1_5818(lbl_1_bss_35BC[var_r31].unk_00, 2, 3, 0, 0);
         var_r28 = fn_1_1434(0, 0, 0);
+        OSReport("[PM/MENT] A9B0 message window created id=%d\n", var_r28);
         HuAudFXPlay(lbl_1_data_0[var_r30][0]);
         fn_1_59A0(lbl_1_bss_33AC[var_r30].unk_00, 1, 5, 0xF, 1);
         fn_1_1968(var_r28, var_r30 + 0x1A0010, -1, -1);
+        OSReport("[PM/MENT] A9B0 message displayed\n");
         fn_1_16AC(var_r28);
+        OSReport("[PM/MENT] A9B0 message window closed\n");
         HuAudSeqFadeOut(lbl_1_bss_14[0], 0xBB8);
         fn_1_5CDC(lbl_1_bss_35BC[var_r31].unk_00, 2, 0);
+        OSReport("[PM/MENT] A9B0 board motion complete\n");
         Hu3DModelAttrSet(lbl_1_bss_35BC[var_r31].unk_00->model[2], HU3D_ATTR_DISPOFF);
         fn_1_2808(fn_1_14418);
+        OSReport("[PM/MENT] A9B0 post animation callback created\n");
         fn_1_4B0(0xA);
+        OSReport("[PM/MENT] A9B0 second sleep complete\n");
         HuAudFXPlay(GWPlayerCfg->character + 0x75);
         HuAudFXPlay(GWPlayerCfg[1].character + 0x75);
         HuAudFXPlay(GWPlayerCfg[2].character + 0x75);
         HuAudFXPlay(GWPlayerCfg[3].character + 0x75);
         fn_1_4B0(0x8C);
+        OSReport("[PM/MENT] A9B0 end\n");
     }
 }
 
@@ -1947,22 +1981,35 @@ void fn_1_C174(s32 arg0)
         fn_1_4B0(0x3C);
         HuAudSeqFadeOut(lbl_1_bss_14[0], 0x3E8);
     }
+    OSReport("[PM/MENT] C174 begin arg=%d\n", arg0);
     WipeCreate(WIPE_MODE_OUT, WIPE_TYPE_NORMAL, -1);
 
+    s32 wipeWaitCount = 0;
     while (WipeStatGet() != 0) {
+        if ((wipeWaitCount++ & 0x3F) == 0) {
+            OSReport("[PM/MENT] wipe wait stat=%d iter=%d\n", WipeStatGet(), wipeWaitCount);
+        }
         fn_1_4D8();
     }
+    OSReport("[PM/MENT] wipe complete\n");
     CharModelKill(-1);
     MGSeqKillAll();
+    OSReport("[PM/MENT] models and minigames cleared\n");
 
     if (arg0 != 0) {
         if (arg0 == 1 || arg0 == 3) {
             omOvlHisData *sp8 = omOvlHisGet(0);
             omOvlHisChg(0, DLL_mstory3dll, 0, 0);
         }
+        s32 waitCount = 0;
+        OSReport("[PM/MENT] overlay wait for board prefetch arg=%d ready=%d\n", arg0, lbl_1_bss_D8);
         do {
             fn_1_4D8();
+            if ((waitCount++ & 0x3F) == 0) {
+                OSReport("[PM/MENT] overlay wait iter=%d ready=%d\n", waitCount, lbl_1_bss_D8);
+            }
         } while (lbl_1_bss_D8 != 1);
+        OSReport("[PM/MENT] overlay prefetch wait complete\n");
         CharMotionInit(GWPlayerCfg[0].character);
         CharMotionInit(GWPlayerCfg[1].character);
         CharMotionInit(GWPlayerCfg[2].character);
@@ -5132,6 +5179,11 @@ void fn_1_19C98(omObjData *arg0, MentDllUnkBss35BCStruct *arg1)
                 HuSprAttrSet(var_r30, 5, HUSPR_ATTR_DISPOFF);
                 HuSprAttrSet(var_r30, 6, HUSPR_ATTR_DISPOFF);
             }
+        }
+        if (lbl_1_bss_35BC[0].unk_08[3] != 0) {
+            OSReport("[PM/MENT] settings input field=%d board=%d turns=%d mg=%d team=%d save=%d done=%d\n",
+                arg1->unk_08[0], arg1->unk_1C[0], arg1->unk_1C[1], arg1->unk_1C[2], arg1->unk_1C[3], arg1->unk_1C[4],
+                lbl_1_bss_35BC[0].unk_08[1]);
         }
         lbl_1_bss_35BC[0].unk_08[3] = 0;
     }

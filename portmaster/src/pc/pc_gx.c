@@ -143,7 +143,17 @@ enum {
     PCGX_DL_OP_TEXCOPY_DST = 0x1002,
     PCGX_DL_OP_COPY_FILTER = 0x1003,
     PCGX_DL_OP_COPY_TEX = 0x1004,
+    PCGX_DL_OP_BEGIN       = 0x1101,
+    PCGX_DL_OP_VERTEX      = 0x1102,
+    PCGX_DL_OP_END         = 0x1103,
 };
+
+typedef struct {
+    u32 primitive;
+    u32 vtxfmt;
+    u16 nverts;
+    u16 reserved;
+} PCGXDLBegin;
 
 static void pc_gx_dl_write(const void* data, u32 len) {
     if (!g_pc_gx_dl.active || g_pc_gx_dl.overflow) return;
@@ -203,13 +213,24 @@ static int s_conv_src_count = 0;    /* source vertices committed this begin */
 static int s_conv_src_expected = 0;
 static PCGXVertex s_conv_v0, s_conv_v1;
 
-/* Whole-batch CPU frustum cull at flush: PC_NO_BATCH_CULL=1 disables. */
-static int s_batch_cull = 1;
+/* Whole-batch CPU frustum cull at flush is opt-in. The GX matrix/depth
+ * conventions are not yet proven equivalent to the handheld clip space, so
+ * correctness takes precedence over this optional optimization. Set
+ * PC_BATCH_CULL=1 to enable it; PC_NO_BATCH_CULL remains accepted. */
+static int s_batch_cull = 0;
 
 /* Commit g_gx.current_vertex into the batch. Converting batches buffer the
  * first two source vertices, then emit one triangle per subsequent vertex
  * (strip winding alternates; fans pivot on the first vertex). */
 static void pc_gx_commit_vertex(void) {
+    if (g_pc_gx_dl.active) {
+        u32 op = PCGX_DL_OP_VERTEX;
+        pc_gx_dl_write(&op, sizeof(op));
+        pc_gx_dl_write(&g_gx.current_vertex, sizeof(g_gx.current_vertex));
+        if (!g_pc_gx_dl.overflow)
+            g_gx.current_vertex_idx++;
+        return;
+    }
     if (!s_conv_active) {
         if (g_gx.current_vertex_idx < PC_GX_MAX_VERTS) {
             g_gx.vertex_buffer[g_gx.current_vertex_idx] = g_gx.current_vertex;
@@ -251,6 +272,8 @@ static void pc_gx_commit_pending_and_flush(void) {
     }
     g_gx.in_begin = 0;
     s_conv_active = 0;
+    if (g_pc_gx_dl.active)
+        return;
     if (g_gx.current_vertex_idx > 0)
         pc_gx_flush_vertices();
 }
@@ -354,7 +377,8 @@ void pc_gx_init(void) {
     s_stream_vbo = (getenv("PC_NO_STREAM_VBO") == NULL);
     s_stream_subdata = (getenv("PC_STREAM_SUBDATA") != NULL);
     s_strip_convert = (getenv("PC_NO_STRIP_CONVERT") == NULL);
-    s_batch_cull = (getenv("PC_NO_BATCH_CULL") == NULL);
+    s_batch_cull = (getenv("PC_BATCH_CULL") != NULL &&
+                    getenv("PC_NO_BATCH_CULL") == NULL);
     printf("[PC/GX] strip convert %s, batch cull %s\n",
            s_strip_convert ? "on" : "off", s_batch_cull ? "on" : "off");
     s_has_base_vertex = (glDrawElementsBaseVertex != NULL);
@@ -494,6 +518,10 @@ void pc_gx_begin_frame(void) {
     /* glClear respects write masks — must enable all before clearing */
     glDepthMask(GL_TRUE);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    /* GXSetScissor enables GL scissoring for UI sprites.  The clear must
+     * cover the whole render target before the next frame, regardless of
+     * whether the optional PC_ENHANCEMENTS path is compiled in. */
+    glDisable(GL_SCISSOR_TEST);
     /* GL masks now diverge from g_gx state; without this, a game re-set of
      * the same values would dedup away and leave the forced masks active. */
     DIRTY(PC_GX_DIRTY_DEPTH | PC_GX_DIRTY_COLOR_MASK);
@@ -593,6 +621,41 @@ void pc_gx_blit_to_screen(void) {
 
 /* --- Vertex Submission --- */
 void GXBegin(u32 primitive, u32 vtxfmt, u16 nverts) {
+    if (g_pc_gx_dl.active) {
+        /* HSF display lists contain geometry only.  Resolve indexed
+         * attributes while recording, then replay the resulting vertices
+         * under the material/matrix state active at GXCallDisplayList(). */
+        if (g_gx.in_begin) {
+            pc_gx_commit_pending_and_flush();
+            {
+                u32 end_op = PCGX_DL_OP_END;
+                pc_gx_dl_write(&end_op, sizeof(end_op));
+            }
+        }
+        {
+            u32 op = PCGX_DL_OP_BEGIN;
+            PCGXDLBegin begin = { primitive, vtxfmt, nverts, 0 };
+            pc_gx_dl_write(&op, sizeof(op));
+            pc_gx_dl_write(&begin, sizeof(begin));
+        }
+        g_gx.current_primitive = primitive;
+        g_gx.current_vtxfmt = vtxfmt;
+        g_gx.expected_vertex_count = nverts;
+        g_gx.current_vertex_idx = 0;
+        g_gx.in_begin = 1;
+        g_gx.vertex_pending = 0;
+        s_conv_active = 0;
+        s_conv_is_fan = 0;
+        s_conv_src_count = 0;
+        s_conv_src_expected = nverts;
+        memset(&g_gx.current_vertex, 0, sizeof(PCGXVertex));
+        g_gx.current_vertex.color0[0] = 255;
+        g_gx.current_vertex.color0[1] = 255;
+        g_gx.current_vertex.color0[2] = 255;
+        g_gx.current_vertex.color0[3] = 255;
+        return;
+    }
+
     /* Batch merge: every GX state setter flushes the open batch immediately,
      * so arriving here with a complete batch still open means no state changed
      * since it was built — the two draws share identical GL state and can be
@@ -673,7 +736,12 @@ void GXBegin(u32 primitive, u32 vtxfmt, u16 nverts) {
 }
 
 void GXEnd(void) {
+    int was_in_begin = g_gx.in_begin;
     pc_gx_commit_pending_and_flush();
+    if (g_pc_gx_dl.active && was_in_begin) {
+        u32 op = PCGX_DL_OP_END;
+        pc_gx_dl_write(&op, sizeof(op));
+    }
 }
 
 void GXPosition3f32(f32 x, f32 y, f32 z) {
@@ -745,8 +813,18 @@ void GXNormal3s8(s8 x, s8 y, s8 z) {
 void GXNormal1x16(u16 index) {
     if (g_gx.array_base[GX_VA_NRM]) {
         const u8* base = (const u8*)g_gx.array_base[GX_VA_NRM];
-        const f32* nrm = (const f32*)(base + index * g_gx.array_stride[GX_VA_NRM]);
-        GXNormal3f32(nrm[0], nrm[1], nrm[2]);
+        const u8* value = base + index * g_gx.array_stride[GX_VA_NRM];
+        int type = g_gx.vtx_fmt[g_gx.current_vtxfmt].normal_type;
+        if (type == GX_S8 || g_gx.array_stride[GX_VA_NRM] == 3) {
+            const s8* nrm = (const s8*)value;
+            GXNormal3s8(nrm[0], nrm[1], nrm[2]);
+        } else if (type == GX_S16 || g_gx.array_stride[GX_VA_NRM] == 6) {
+            const s16* nrm = (const s16*)value;
+            GXNormal3s16(nrm[0], nrm[1], nrm[2]);
+        } else {
+            const f32* nrm = (const f32*)value;
+            GXNormal3f32(nrm[0], nrm[1], nrm[2]);
+        }
     }
 }
 void GXNormal1x8(u8 index) { GXNormal1x16(index); }
@@ -1421,13 +1499,15 @@ void GXSetVtxDescv(const void* list) {
 void GXClearVtxDesc(void) { memset(g_gx.vtx_desc, 0, sizeof(g_gx.vtx_desc)); }
 
 void GXSetVtxAttrFmt(u32 vtxfmt, u32 attr, u32 cnt, u32 type, u8 frac) {
-    (void)cnt; (void)type;
-    if (vtxfmt < GX_MAX_VTXFMT) {
-        if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
-            int tc = (int)attr - GX_VA_TEX0;
-            g_gx.vtx_fmt[vtxfmt].has_texcoord[tc] = 1;
-            g_gx.vtx_fmt[vtxfmt].texcoord_frac[tc] = frac;
-        }
+    if (vtxfmt >= GX_MAX_VTXFMT) return;
+    if (attr == GX_VA_NRM) {
+        g_gx.vtx_fmt[vtxfmt].normal_type = (int)type;
+        g_gx.vtx_fmt[vtxfmt].normal_count = (int)cnt;
+    }
+    if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
+        int tc = (int)attr - GX_VA_TEX0;
+        g_gx.vtx_fmt[vtxfmt].has_texcoord[tc] = 1;
+        g_gx.vtx_fmt[vtxfmt].texcoord_frac[tc] = frac;
     }
 }
 
@@ -2530,6 +2610,7 @@ int IsWriteGatherBufferEmpty(void) { return 1; }
 
 /* --- Display List --- */
 void GXBeginDisplayList(void* list, u32 size) {
+    pc_gx_commit_pending_and_flush();
     g_pc_gx_dl.active = 1;
     g_pc_gx_dl.buf = (u8*)list;
     g_pc_gx_dl.size = size;
@@ -2537,6 +2618,8 @@ void GXBeginDisplayList(void* list, u32 size) {
     g_pc_gx_dl.overflow = 0;
 }
 u32 GXEndDisplayList(void) {
+    if (g_pc_gx_dl.active && g_gx.in_begin)
+        GXEnd();
     u32 nbytes = 0;
     if (g_pc_gx_dl.active && !g_pc_gx_dl.overflow) {
         nbytes = g_pc_gx_dl.off;
@@ -2589,6 +2672,29 @@ void GXCallDisplayList(void* list, u32 nbytes) {
                 pc_gx_copy_tex_execute((void*)(uintptr_t)dest64, (GXBool)(clear ? 1 : 0));
                 break;
             }
+            case PCGX_DL_OP_BEGIN: {
+                PCGXDLBegin begin;
+                if (off + sizeof(begin) > nbytes) return;
+                memcpy(&begin, p + off, sizeof(begin));
+                off += sizeof(begin);
+                GXBegin(begin.primitive, begin.vtxfmt, begin.nverts);
+                break;
+            }
+            case PCGX_DL_OP_VERTEX: {
+                PCGXVertex vertex;
+                if (off + sizeof(vertex) > nbytes) return;
+                memcpy(&vertex, p + off, sizeof(vertex));
+                off += sizeof(vertex);
+                if (!g_gx.in_begin) return;
+                if (g_gx.vertex_pending)
+                    pc_gx_commit_vertex();
+                g_gx.current_vertex = vertex;
+                g_gx.vertex_pending = 1;
+                break;
+            }
+            case PCGX_DL_OP_END:
+                GXEnd();
+                break;
             default:
                 return;
         }

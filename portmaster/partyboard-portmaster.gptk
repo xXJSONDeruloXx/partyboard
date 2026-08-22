@@ -1,0 +1,28 @@
+# RG28XX Nintendo layout: X north, A east, B south, Y west.
+back = esc
+start = enter
+
+a = space
+b = lshift
+x = x
+y = y
+
+up = up
+down = down
+left = left
+right = right
+
+left_analog_up = w
+left_analog_down = s
+left_analog_left = a
+left_analog_right = d
+
+l1 = q
+l2 = q
+r1 = e
+r2 = e
+
+right_analog_up = "
+right_analog_down = "
+right_analog_left = "
+right_analog_right = "

@@ -3,6 +3,7 @@
 #include "game/memory.h"
 
 #ifndef __MWERKS__
+#include <stdio.h>
 #include <string.h>
 #endif
 
@@ -120,8 +121,13 @@ omDllData *omDLLLink(omDllData **dll_ptr, s16 overlay, s16 flag)
 	}
 #elif defined(__linux__) || defined(__APPLE__) || defined(__ANDROID__)
 	{
-		// RPATH has to be set properly in CMake
-		dll->handle = dlopen(dllFile->name, RTLD_LAZY);
+		const char *load_name = dllFile->name;
+#ifdef PARTY_BOARD_PORTMASTER
+		char load_path[256];
+		snprintf(load_path, sizeof(load_path), "./%s", dllFile->name);
+		load_name = load_path;
+#endif
+		dll->handle = dlopen(load_name, RTLD_LAZY);
 		if (dll->handle == NULL) {
 			OSReport("objdll>++++++++++++++++ DLL Link Failed %s\n", dlerror());
 		}

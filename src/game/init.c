@@ -14,7 +14,9 @@
 #endif
 
 #ifdef TARGET_PC
+#ifndef PARTY_BOARD_PORTMASTER
 #include <port/ui.h>
+#endif
 #endif
 
 struct memory_info {
