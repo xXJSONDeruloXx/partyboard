@@ -119,6 +119,7 @@ typedef struct {
     u8 alpha_mat_src;     /* chan_ctrl_mat_src[1] */
     u8 fog_enabled;
     u8 alpha_comp0, alpha_aop, alpha_comp1;
+    u8 indirect_active;
     u8 _pad;
     struct {
         u8 cin[4];  /* color inputs a,b,c,d (0-15) */
@@ -146,6 +147,7 @@ static void build_key(PCGXState* st, ShaderKey* k) {
     k->alpha_comp0 = (u8)st->alpha_comp0;
     k->alpha_aop = (u8)st->alpha_op;
     k->alpha_comp1 = (u8)st->alpha_comp1;
+    k->indirect_active = st->num_ind_stages > 0 ? 1 : 0;
     for (int i = 0; i < ns; i++) {
         PCGXTevStage* ts = &st->tev_stages[i];
         k->s[i].cin[0] = (u8)ts->color_a; k->s[i].cin[1] = (u8)ts->color_b;
@@ -321,6 +323,74 @@ static void emit_ka(SB* sb, int sel) {
     }
 }
 
+static void emit_indirect_helpers(SB* sb) {
+    static const char* code =
+        "vec2 selectTexCoord(int id, vec2 tc0, vec2 tc1, vec2 tc2, vec2 tc3,\n"
+        "                    vec2 tc4, vec2 tc5, vec2 tc6, vec2 tc7) {\n"
+        "    if (id == 0) return tc0;\n"
+        "    if (id == 1) return tc1;\n"
+        "    if (id == 2) return tc2;\n"
+        "    if (id == 3) return tc3;\n"
+        "    if (id == 4) return tc4;\n"
+        "    if (id == 5) return tc5;\n"
+        "    if (id == 6) return tc6;\n"
+        "    return tc7;\n"
+        "}\n\n"
+        "vec4 sampleIndirect(int id, vec2 uv) {\n"
+        "    if (id == 0) return texture(u_ind_tex0, uv);\n"
+        "    if (id == 1) return texture(u_ind_tex1, uv);\n"
+        "    if (id == 2) return texture(u_ind_tex2, uv);\n"
+        "    return texture(u_ind_tex3, uv);\n"
+        "}\n\n"
+        "vec2 applyIndirect(int tev, vec2 base, vec2 baseSize,\n"
+        "                   vec2 tc0, vec2 tc1, vec2 tc2, vec2 tc3,\n"
+        "                   vec2 tc4, vec2 tc5, vec2 tc6, vec2 tc7) {\n"
+        "    ivec4 cfg = u_tev_ind_cfg[tev];\n"
+        "    ivec4 wrap = u_tev_ind_wrap[tev];\n"
+        "    if (u_num_ind_stages <= 0 || cfg.x < 0 || cfg.x >= u_num_ind_stages) return base;\n"
+        "    if (cfg.w == 0 && wrap.x == 0 && wrap.y == 0 && wrap.z == 0 && wrap.w == 0) return base;\n"
+        "    int ind = cfg.x;\n"
+        "    vec2 indtc = selectTexCoord(u_ind_coord[ind], tc0, tc1, tc2, tc3, tc4, tc5, tc6, tc7);\n"
+        "    vec2 induv = indtc * u_ind_scale[ind];\n"
+        "    vec3 indv = sampleIndirect(ind, induv).abg * 255.0;\n"
+        "    if (cfg.y == 1) indv = floor(indv / 8.0);\n"
+        "    else if (cfg.y == 2) indv = floor(indv / 16.0);\n"
+        "    else if (cfg.y == 3) indv = floor(indv / 32.0);\n"
+        "    float bias = (cfg.y == 0) ? -128.0 : 1.0;\n"
+        "    if ((cfg.z & 1) != 0) indv.x += bias;\n"
+        "    if ((cfg.z & 2) != 0) indv.y += bias;\n"
+        "    if ((cfg.z & 4) != 0) indv.z += bias;\n"
+        "    vec2 basePx = base * max(baseSize, vec2(1.0));\n"
+        "    if (wrap.x == 1) basePx.x = mod(basePx.x, 256.0);\n"
+        "    else if (wrap.x == 2) basePx.x = mod(basePx.x, 128.0);\n"
+        "    else if (wrap.x == 3) basePx.x = mod(basePx.x, 64.0);\n"
+        "    else if (wrap.x == 4) basePx.x = mod(basePx.x, 32.0);\n"
+        "    else if (wrap.x == 5) basePx.x = mod(basePx.x, 16.0);\n"
+        "    else if (wrap.x == 6) basePx.x = 0.0;\n"
+        "    if (wrap.y == 1) basePx.y = mod(basePx.y, 256.0);\n"
+        "    else if (wrap.y == 2) basePx.y = mod(basePx.y, 128.0);\n"
+        "    else if (wrap.y == 3) basePx.y = mod(basePx.y, 64.0);\n"
+        "    else if (wrap.y == 4) basePx.y = mod(basePx.y, 32.0);\n"
+        "    else if (wrap.y == 5) basePx.y = mod(basePx.y, 16.0);\n"
+        "    else if (wrap.y == 6) basePx.y = 0.0;\n"
+        "    vec2 offset = vec2(0.0);\n"
+        "    if (cfg.w >= 1 && cfg.w <= 3) {\n"
+        "        int mi = cfg.w - 1;\n"
+        "        offset = vec2(dot(vec3(u_ind_mtx_r0[mi].x, u_ind_mtx_r1[mi].x, u_ind_mtx_r0[mi].z), indv),\n"
+        "                      dot(vec3(u_ind_mtx_r0[mi].y, u_ind_mtx_r1[mi].y, u_ind_mtx_r1[mi].z), indv)) * u_ind_mtx_scale[mi];\n"
+        "    } else if (cfg.w >= 5 && cfg.w <= 7) {\n"
+        "        int mi = cfg.w - 5;\n"
+        "        offset = basePx * indv.x * u_ind_mtx_scale[mi] / 256.0;\n"
+        "    } else if (cfg.w >= 9 && cfg.w <= 11) {\n"
+        "        int mi = cfg.w - 9;\n"
+        "        offset = basePx * indv.y * u_ind_mtx_scale[mi] / 256.0;\n"
+        "    }\n"
+        "    basePx += offset;\n"
+        "    return basePx / max(baseSize, vec2(1.0));\n"
+        "}\n\n";
+    sb_printf(sb, "%s", code);
+}
+
 /* Emit one alpha comparison */
 static void emit_acomp(SB* sb, const char* var, int comp, const char* ref) {
     switch (comp) {
@@ -362,8 +432,8 @@ static char* generate_frag(PCGXState* st) {
     /* --- Header & inputs --- */
     P("#version 330 core\n");
     P("in vec4 v_color;\n");
-    P("in vec2 v_texcoord0;\n");
-    P("in vec2 v_texcoord1;\n");
+    for (int i = 0; i < 8; i++)
+        P("in vec3 v_texcoord%d;\n", i);
     P("in vec3 v_normal;\n");
     P("in float v_fog_z;\n");
     P("in vec3 v_light_accum;\n\n");
@@ -401,6 +471,19 @@ static char* generate_frag(PCGXState* st) {
         P("uniform int u_use_texture%d;\n", s);
         P("uniform int u_tev%d_tc_src;\n", s);
     }
+    if (st->num_ind_stages > 0) {
+        P("uniform int u_num_ind_stages;\n");
+        for (int i = 0; i < 4; i++) P("uniform sampler2D u_ind_tex%d;\n", i);
+        P("uniform int u_ind_coord[4];\n");
+        P("uniform vec2 u_ind_scale[4];\n");
+        P("uniform vec2 u_ind_tex_size[4];\n");
+        P("uniform vec2 u_tex_size[4];\n");
+        P("uniform vec3 u_ind_mtx_r0[4];\n");
+        P("uniform vec3 u_ind_mtx_r1[4];\n");
+        P("uniform float u_ind_mtx_scale[3];\n");
+        P("uniform ivec4 u_tev_ind_cfg[4];\n");
+        P("uniform ivec4 u_tev_ind_wrap[4];\n");
+    }
 
     /* Material/ambient colors — only if lighting path reads them */
     {
@@ -428,6 +511,10 @@ static char* generate_frag(PCGXState* st) {
 
     P("\nout vec4 fragColor;\n\n");
 
+    P("vec2 projectTex(vec3 tc) { float q = (abs(tc.z) > 0.000001) ? tc.z : 1.0; return tc.xy / q; }\n\n");
+    if (st->num_ind_stages > 0)
+        emit_indirect_helpers(&sb);
+
     /* --- Swap helper (still needed for dynamic swap tables) --- */
     P("vec4 applySwap(vec4 v, ivec4 sw) {\n");
     P("    return vec4(v[sw.x], v[sw.y], v[sw.z], v[sw.w]);\n");
@@ -435,12 +522,14 @@ static char* generate_frag(PCGXState* st) {
 
     /* --- main() --- */
     P("void main() {\n");
-    P("    vec2 tc0 = v_texcoord0;\n");
-    P("    vec2 tc1 = v_texcoord1;\n\n");
+    P("    vec2 tc0 = projectTex(v_texcoord0);\n");
+    for (int i = 1; i < 8; i++)
+        P("    vec2 tc%d = projectTex(v_texcoord%d);\n", i, i);
+    P("\n");
 
     /* Texcoord selection per stage */
     for (int s = 0; s < ns; s++) {
-        P("    vec2 stc%d = (u_tev%d_tc_src == 0) ? tc0 : tc1;\n", s, s);
+        P("    vec2 stc%d = (u_tev%d_tc_src == 0) ? tc0 : (u_tev%d_tc_src == 1) ? tc1 : (u_tev%d_tc_src == 2) ? tc2 : (u_tev%d_tc_src == 3) ? tc3 : (u_tev%d_tc_src == 4) ? tc4 : (u_tev%d_tc_src == 5) ? tc5 : (u_tev%d_tc_src == 6) ? tc6 : tc7;\n", s, s, s, s, s, s, s, s);
     }
     P("\n");
 
@@ -449,8 +538,13 @@ static char* generate_frag(PCGXState* st) {
     const char* use_names[] = { "u_use_texture0", "u_use_texture1", "u_use_texture2", "u_use_texture3" };
     for (int s = 0; s < ns; s++) {
         P("    vec4 texColor%d = vec4(1.0);\n", s);
-        P("    if (%s != 0) texColor%d = texture(%s, stc%d);\n",
-          use_names[s], s, tex_names[s], s);
+        if (st->num_ind_stages > 0) {
+            P("    if (%s != 0) texColor%d = texture(%s, applyIndirect(%d, stc%d, u_tex_size[%d], tc0, tc1, tc2, tc3, tc4, tc5, tc6, tc7));\n",
+              use_names[s], s, tex_names[s], s, s, s);
+        } else {
+            P("    if (%s != 0) texColor%d = texture(%s, stc%d);\n",
+              use_names[s], s, tex_names[s], s);
+        }
     }
     P("\n");
 
@@ -598,7 +692,7 @@ static int s_specialized_enabled = 1;
 
 #define SDC_FILE    "shader_cache.bin"
 #define SDC_MAGIC   0x41435343u /* "ACSC" */
-#define SDC_VERSION 1u
+#define SDC_VERSION 3u
 #define SDC_MAX_BIN (1u << 20)  /* sanity cap per program binary */
 
 static int s_sdc_ok = 0; /* file exists with valid header; safe to append */

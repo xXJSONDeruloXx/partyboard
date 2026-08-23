@@ -2,8 +2,14 @@
 precision highp float;
 precision highp int;
 in vec4 v_color;
-in vec2 v_texcoord0;
-in vec2 v_texcoord1;
+in vec3 v_texcoord0;
+in vec3 v_texcoord1;
+in vec3 v_texcoord2;
+in vec3 v_texcoord3;
+in vec3 v_texcoord4;
+in vec3 v_texcoord5;
+in vec3 v_texcoord6;
+in vec3 v_texcoord7;
 in vec3 v_normal;
 in float v_fog_z;
 in vec3 v_light_accum;
@@ -84,21 +90,24 @@ uniform int u_alpha_op;
 uniform int u_alpha_comp1;
 uniform int u_alpha_ref1;
 
-/* Indirect uniforms kept for compatibility but unused */
+/* Indirect texturing.  The board uses GX indirection for its projected
+ * ground/reflection materials; the fixed-function GX path samples an
+ * 8-bit offset texture, applies a signed bias and 2x3 matrix, then adjusts
+ * the stage texture coordinate in texel space. */
 uniform int u_num_ind_stages;
 uniform sampler2D u_ind_tex0;
 uniform sampler2D u_ind_tex1;
+uniform sampler2D u_ind_tex2;
+uniform sampler2D u_ind_tex3;
+uniform int u_ind_coord[4];
 uniform vec2 u_ind_scale[4];
+uniform vec2 u_ind_tex_size[4];
+uniform vec2 u_tex_size[4];
 uniform vec3 u_ind_mtx_r0[4];
 uniform vec3 u_ind_mtx_r1[4];
-uniform ivec4 u_tev0_ind_cfg;
-uniform ivec4 u_tev1_ind_cfg;
-uniform ivec4 u_tev2_ind_cfg;
-uniform ivec4 u_tev3_ind_cfg;
-uniform ivec3 u_tev0_ind_wrap;
-uniform ivec3 u_tev1_ind_wrap;
-uniform ivec3 u_tev2_ind_wrap;
-uniform ivec3 u_tev3_ind_wrap;
+uniform float u_ind_mtx_scale[3];
+uniform ivec4 u_tev_ind_cfg[4];
+uniform ivec4 u_tev_ind_wrap[4];
 
 out vec4 fragColor;
 
@@ -234,24 +243,122 @@ bool alphaTest(int comp, float val, float ref) {
     return true;
 }
 
-void main() {
-    vec2 tc0 = v_texcoord0;
-    vec2 tc1 = v_texcoord1;
+vec2 projectTex(vec3 tc) {
+    float q = (abs(tc.z) > 0.000001) ? tc.z : 1.0;
+    return tc.xy / q;
+}
 
-    /* Texcoord selection — no indirect textures (stripped for performance) */
-    vec2 stc0 = (u_tev0_tc_src == 0) ? tc0 : tc1;
-    vec2 stc1 = (u_tev1_tc_src == 0) ? tc0 : tc1;
-    vec2 stc2 = (u_tev2_tc_src == 0) ? tc0 : tc1;
-    vec2 stc3 = (u_tev3_tc_src == 0) ? tc0 : tc1;
+vec2 selectTexCoord(int id, vec2 tc0, vec2 tc1, vec2 tc2, vec2 tc3,
+                    vec2 tc4, vec2 tc5, vec2 tc6, vec2 tc7) {
+    if (id == 0) return tc0;
+    if (id == 1) return tc1;
+    if (id == 2) return tc2;
+    if (id == 3) return tc3;
+    if (id == 4) return tc4;
+    if (id == 5) return tc5;
+    if (id == 6) return tc6;
+    return tc7;
+}
+
+vec4 sampleIndirect(int id, vec2 uv) {
+    if (id == 0) return texture(u_ind_tex0, uv);
+    if (id == 1) return texture(u_ind_tex1, uv);
+    if (id == 2) return texture(u_ind_tex2, uv);
+    return texture(u_ind_tex3, uv);
+}
+
+vec2 applyIndirect(int tev, vec2 base, vec2 baseSize,
+                   vec2 tc0, vec2 tc1, vec2 tc2, vec2 tc3,
+                   vec2 tc4, vec2 tc5, vec2 tc6, vec2 tc7) {
+    ivec4 cfg = u_tev_ind_cfg[tev];
+    ivec4 wrap = u_tev_ind_wrap[tev];
+    if (u_num_ind_stages <= 0 || cfg.x < 0 || cfg.x >= u_num_ind_stages)
+        return base;
+    if (cfg.w == 0 && wrap.x == 0 && wrap.y == 0 && wrap.z == 0 && wrap.w == 0)
+        return base;
+
+    int ind = cfg.x;
+    vec2 indtc = selectTexCoord(u_ind_coord[ind], tc0, tc1, tc2, tc3,
+                                tc4, tc5, tc6, tc7);
+    vec2 induv = indtc * u_ind_scale[ind];
+    vec3 indv = sampleIndirect(ind, induv).abg * 255.0;
+    if (cfg.y == 1) indv = floor(indv / 8.0);
+    else if (cfg.y == 2) indv = floor(indv / 16.0);
+    else if (cfg.y == 3) indv = floor(indv / 32.0);
+
+    float bias = (cfg.y == 0) ? -128.0 : 1.0;
+    if ((cfg.z & 1) != 0) indv.x += bias;
+    if ((cfg.z & 2) != 0) indv.y += bias;
+    if ((cfg.z & 4) != 0) indv.z += bias;
+
+    vec2 basePx = base * max(baseSize, vec2(1.0));
+    if (wrap.x == 1) basePx.x = mod(basePx.x, 256.0);
+    else if (wrap.x == 2) basePx.x = mod(basePx.x, 128.0);
+    else if (wrap.x == 3) basePx.x = mod(basePx.x, 64.0);
+    else if (wrap.x == 4) basePx.x = mod(basePx.x, 32.0);
+    else if (wrap.x == 5) basePx.x = mod(basePx.x, 16.0);
+    else if (wrap.x == 6) basePx.x = 0.0;
+    if (wrap.y == 1) basePx.y = mod(basePx.y, 256.0);
+    else if (wrap.y == 2) basePx.y = mod(basePx.y, 128.0);
+    else if (wrap.y == 3) basePx.y = mod(basePx.y, 64.0);
+    else if (wrap.y == 4) basePx.y = mod(basePx.y, 32.0);
+    else if (wrap.y == 5) basePx.y = mod(basePx.y, 16.0);
+    else if (wrap.y == 6) basePx.y = 0.0;
+
+    vec2 offset = vec2(0.0);
+    if (cfg.w >= 1 && cfg.w <= 3) {
+        int mi = cfg.w - 1;
+        offset = vec2(
+            dot(vec3(u_ind_mtx_r0[mi].x, u_ind_mtx_r1[mi].x, u_ind_mtx_r0[mi].z), indv),
+            dot(vec3(u_ind_mtx_r0[mi].y, u_ind_mtx_r1[mi].y, u_ind_mtx_r1[mi].z), indv)
+        ) * u_ind_mtx_scale[mi];
+    } else if (cfg.w >= 5 && cfg.w <= 7) {
+        int mi = cfg.w - 5;
+        offset = basePx * indv.x * u_ind_mtx_scale[mi] / 256.0;
+    } else if (cfg.w >= 9 && cfg.w <= 11) {
+        int mi = cfg.w - 9;
+        offset = basePx * indv.y * u_ind_mtx_scale[mi] / 256.0;
+    }
+    basePx += offset;
+    return basePx / max(baseSize, vec2(1.0));
+}
+
+void main() {
+    vec2 tc0 = projectTex(v_texcoord0);
+    vec2 tc1 = projectTex(v_texcoord1);
+    vec2 tc2 = projectTex(v_texcoord2);
+    vec2 tc3 = projectTex(v_texcoord3);
+    vec2 tc4 = projectTex(v_texcoord4);
+    vec2 tc5 = projectTex(v_texcoord5);
+    vec2 tc6 = projectTex(v_texcoord6);
+    vec2 tc7 = projectTex(v_texcoord7);
+
+    /* Texcoord selection — indirect texturing remains separate. */
+    vec2 stc0 = (u_tev0_tc_src == 0) ? tc0 : (u_tev0_tc_src == 1) ? tc1 :
+                (u_tev0_tc_src == 2) ? tc2 : (u_tev0_tc_src == 3) ? tc3 :
+                (u_tev0_tc_src == 4) ? tc4 : (u_tev0_tc_src == 5) ? tc5 :
+                (u_tev0_tc_src == 6) ? tc6 : tc7;
+    vec2 stc1 = (u_tev1_tc_src == 0) ? tc0 : (u_tev1_tc_src == 1) ? tc1 :
+                (u_tev1_tc_src == 2) ? tc2 : (u_tev1_tc_src == 3) ? tc3 :
+                (u_tev1_tc_src == 4) ? tc4 : (u_tev1_tc_src == 5) ? tc5 :
+                (u_tev1_tc_src == 6) ? tc6 : tc7;
+    vec2 stc2 = (u_tev2_tc_src == 0) ? tc0 : (u_tev2_tc_src == 1) ? tc1 :
+                (u_tev2_tc_src == 2) ? tc2 : (u_tev2_tc_src == 3) ? tc3 :
+                (u_tev2_tc_src == 4) ? tc4 : (u_tev2_tc_src == 5) ? tc5 :
+                (u_tev2_tc_src == 6) ? tc6 : tc7;
+    vec2 stc3 = (u_tev3_tc_src == 0) ? tc0 : (u_tev3_tc_src == 1) ? tc1 :
+                (u_tev3_tc_src == 2) ? tc2 : (u_tev3_tc_src == 3) ? tc3 :
+                (u_tev3_tc_src == 4) ? tc4 : (u_tev3_tc_src == 5) ? tc5 :
+                (u_tev3_tc_src == 6) ? tc6 : tc7;
 
     vec4 texColor0 = vec4(1.0);
     vec4 texColor1 = vec4(1.0);
     vec4 texColor2 = vec4(1.0);
     vec4 texColor3 = vec4(1.0);
-    if (u_use_texture0 != 0) texColor0 = texture(u_texture0, stc0);
-    if (u_use_texture1 != 0) texColor1 = texture(u_texture1, stc1);
-    if (u_use_texture2 != 0) texColor2 = texture(u_texture2, stc2);
-    if (u_use_texture3 != 0) texColor3 = texture(u_texture3, stc3);
+    if (u_use_texture0 != 0) texColor0 = texture(u_texture0, applyIndirect(0, stc0, u_tex_size[0], tc0, tc1, tc2, tc3, tc4, tc5, tc6, tc7));
+    if (u_use_texture1 != 0) texColor1 = texture(u_texture1, applyIndirect(1, stc1, u_tex_size[1], tc0, tc1, tc2, tc3, tc4, tc5, tc6, tc7));
+    if (u_use_texture2 != 0) texColor2 = texture(u_texture2, applyIndirect(2, stc2, u_tex_size[2], tc0, tc1, tc2, tc3, tc4, tc5, tc6, tc7));
+    if (u_use_texture3 != 0) texColor3 = texture(u_texture3, applyIndirect(3, stc3, u_tex_size[3], tc0, tc1, tc2, tc3, tc4, tc5, tc6, tc7));
 
     /* Simplified rasterized color — no per-light loop, just ambient */
     vec4 rasColor;

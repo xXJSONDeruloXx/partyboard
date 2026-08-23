@@ -76,7 +76,7 @@ typedef struct {
     float normal[3];
     unsigned char color0[4];
     unsigned char color1[4];
-    float texcoord[2][2]; /* only [0] and [1] used (two tex gen units) — was [8][2] (48 bytes wasted) */
+    float texcoord[2][2]; /* raw TEX0 coordinates; texgen units are derived in the vertex shader */
 } PCGXVertex; /* 48 bytes (was 96) — halves VBO upload bandwidth */
 
 typedef struct {
@@ -112,13 +112,16 @@ typedef struct {
     GLint light_mask, light_pos[8], light_color[8];
     GLint diff_fn, attn_fn;
     GLint light_dir[8], light_a[8], light_k[8];
-    GLint texmtx_enable[2], texmtx_row0[2], texmtx_row1[2], texgen_src[2];
+    GLint texmtx_enable[8], texmtx_row0[8], texmtx_row1[8], texmtx_row2[8];
+    GLint texgen_type[8], texgen_src[8];
     GLint use_texture0, use_texture1, use_texture2, use_texture3;
     GLint texture0, texture1, texture2, texture3;
     GLint tev_tc_src[PC_GX_MAX_TEV_STAGES];
     GLint num_ind_stages;
-    GLint ind_tex[4], ind_scale[4];
+    GLint ind_tex[4], ind_coord[4], ind_scale[4];
+    GLint ind_tex_size[4], tex_size[PC_GX_MAX_TEV_STAGES];
     GLint ind_mtx_r0[PC_GX_MAX_TEV_STAGES], ind_mtx_r1[PC_GX_MAX_TEV_STAGES];
+    GLint ind_mtx_scale[3];
     GLint tev_ind_cfg[PC_GX_MAX_TEV_STAGES], tev_ind_wrap[PC_GX_MAX_TEV_STAGES];
     GLint fog_type, fog_start, fog_end, fog_color;
     GLint tev_bsc[PC_GX_MAX_TEV_STAGES], tev_out[PC_GX_MAX_TEV_STAGES];

@@ -1162,9 +1162,9 @@ void pc_gx_fill_uniform_locations(GLuint shader, PCGXUniformLocs* u) {
         u->tev_alpha_op[i] = UL(name);
         snprintf(name, sizeof(name), "u_tev%d_tc_src", i);
         u->tev_tc_src[i] = UL(name);
-        snprintf(name, sizeof(name), "u_tev%d_ind_cfg", i);
+        snprintf(name, sizeof(name), "u_tev_ind_cfg[%d]", i);
         u->tev_ind_cfg[i] = UL(name);
-        snprintf(name, sizeof(name), "u_tev%d_ind_wrap", i);
+        snprintf(name, sizeof(name), "u_tev_ind_wrap[%d]", i);
         u->tev_ind_wrap[i] = UL(name);
     }
 
@@ -1202,14 +1202,20 @@ void pc_gx_fill_uniform_locations(GLuint shader, PCGXUniformLocs* u) {
         u->light_k[i] = UL(name);
     }
 
-    u->texmtx_enable[0] = UL("u_texmtx_enable");
-    u->texmtx_row0[0]  = UL("u_texmtx_row0");
-    u->texmtx_row1[0]  = UL("u_texmtx_row1");
-    u->texgen_src[0]   = UL("u_texgen_src0");
-    u->texmtx_enable[1] = UL("u_texmtx1_enable");
-    u->texmtx_row0[1]  = UL("u_texmtx1_row0");
-    u->texmtx_row1[1]  = UL("u_texmtx1_row1");
-    u->texgen_src[1]   = UL("u_texgen_src1");
+    for (i = 0; i < 8; i++) {
+        snprintf(name, sizeof(name), "u_texmtx_enable[%d]", i);
+        u->texmtx_enable[i] = UL(name);
+        snprintf(name, sizeof(name), "u_texmtx_row0[%d]", i);
+        u->texmtx_row0[i] = UL(name);
+        snprintf(name, sizeof(name), "u_texmtx_row1[%d]", i);
+        u->texmtx_row1[i] = UL(name);
+        snprintf(name, sizeof(name), "u_texmtx_row2[%d]", i);
+        u->texmtx_row2[i] = UL(name);
+        snprintf(name, sizeof(name), "u_texgen_type[%d]", i);
+        u->texgen_type[i] = UL(name);
+        snprintf(name, sizeof(name), "u_texgen_src[%d]", i);
+        u->texgen_src[i] = UL(name);
+    }
 
     u->use_texture0 = UL("u_use_texture0");
     u->use_texture1 = UL("u_use_texture1");
@@ -1224,14 +1230,26 @@ void pc_gx_fill_uniform_locations(GLuint shader, PCGXUniformLocs* u) {
     for (i = 0; i < 4; i++) {
         snprintf(name, sizeof(name), "u_ind_tex%d", i);
         u->ind_tex[i] = UL(name);
+        snprintf(name, sizeof(name), "u_ind_coord[%d]", i);
+        u->ind_coord[i] = UL(name);
         snprintf(name, sizeof(name), "u_ind_scale[%d]", i);
         u->ind_scale[i] = UL(name);
+        snprintf(name, sizeof(name), "u_ind_tex_size[%d]", i);
+        u->ind_tex_size[i] = UL(name);
+    }
+    for (i = 0; i < PC_GX_MAX_TEV_STAGES; i++) {
+        snprintf(name, sizeof(name), "u_tex_size[%d]", i);
+        u->tex_size[i] = UL(name);
     }
     for (i = 0; i < PC_GX_MAX_TEV_STAGES; i++) {
         snprintf(name, sizeof(name), "u_ind_mtx_r0[%d]", i);
         u->ind_mtx_r0[i] = UL(name);
         snprintf(name, sizeof(name), "u_ind_mtx_r1[%d]", i);
         u->ind_mtx_r1[i] = UL(name);
+    }
+    for (i = 0; i < 3; i++) {
+        snprintf(name, sizeof(name), "u_ind_mtx_scale[%d]", i);
+        u->ind_mtx_scale[i] = UL(name);
     }
 
     u->fog_type  = UL("u_fog_type");
@@ -1357,6 +1375,9 @@ void pc_gx_flush_vertices(void) {
             sl = g_gx.uloc.texture1; if (sl >= 0) glUniform1i(sl, 1);
             sl = g_gx.uloc.texture2; if (sl >= 0) glUniform1i(sl, 2);
             sl = g_gx.uloc.texture3; if (sl >= 0) glUniform1i(sl, 3);
+            for (int i = 0; i < 4; i++) {
+                sl = g_gx.uloc.ind_tex[i]; if (sl >= 0) glUniform1i(sl, 4 + i);
+            }
         }
     }
 
@@ -1445,6 +1466,11 @@ void pc_gx_flush_vertices(void) {
                 loc = UL(tev_bsc[s]);  if (loc >= 0) glUniform4i(loc, ts->color_bias, ts->color_scale, ts->alpha_bias, ts->alpha_scale);
                 loc = UL(tev_out[s]);  if (loc >= 0) glUniform4i(loc, ts->color_clamp, ts->alpha_clamp, ts->color_out, ts->alpha_out);
                 loc = UL(tev_swap[s]); if (loc >= 0) glUniform2i(loc, ts->ras_swap, ts->tex_swap);
+                loc = UL(tev_ind_cfg[s]);
+                if (loc >= 0) glUniform4i(loc, ts->ind_stage, ts->ind_format, ts->ind_bias, ts->ind_mtx);
+                loc = UL(tev_ind_wrap[s]);
+                if (loc >= 0) glUniform4i(loc, ts->ind_wrap_s, ts->ind_wrap_t,
+                                          ts->ind_add_prev, ts->ind_alpha);
             }
             loc = UL(tev_ksel);
             if (loc >= 0) {
@@ -1464,6 +1490,34 @@ void pc_gx_flush_vertices(void) {
                     else tc_src = s;
                 }
                 loc = UL(tev_tc_src[s]); if (loc >= 0) glUniform1i(loc, tc_src);
+            }
+        }
+
+        if (dirty & PC_GX_DIRTY_INDIRECT) {
+            static int no_indirect = -1;
+            if (no_indirect < 0) no_indirect = getenv("PC_NO_INDIRECT") != NULL;
+            loc = UL(num_ind_stages); if (loc >= 0) glUniform1i(loc, no_indirect ? 0 : g_gx.num_ind_stages);
+            for (int i = 0; i < 4; i++) {
+                float scale = 1.0f;
+                int exp = g_gx.ind_order[i].scale_s;
+                if (exp >= 0 && exp <= 8) scale = 1.0f / (float)(1 << exp);
+                float scale_t = 1.0f;
+                exp = g_gx.ind_order[i].scale_t;
+                if (exp >= 0 && exp <= 8) scale_t = 1.0f / (float)(1 << exp);
+                loc = UL(ind_coord[i]); if (loc >= 0) glUniform1i(loc, g_gx.ind_order[i].tex_coord);
+                loc = UL(ind_scale[i]); if (loc >= 0) glUniform2f(loc, scale, scale_t);
+                int map = g_gx.ind_order[i].tex_map;
+                float iw = (map >= 0 && map < 8 && g_gx.tex_obj_w[map] > 0) ? (float)g_gx.tex_obj_w[map] : 1.0f;
+                float ih = (map >= 0 && map < 8 && g_gx.tex_obj_h[map] > 0) ? (float)g_gx.tex_obj_h[map] : 1.0f;
+                loc = UL(ind_tex_size[i]); if (loc >= 0) glUniform2f(loc, iw, ih);
+            }
+            for (int i = 0; i < 3; i++) {
+                loc = UL(ind_mtx_r0[i]);
+                if (loc >= 0) glUniform3fv(loc, 1, g_gx.ind_mtx[i][0]);
+                loc = UL(ind_mtx_r1[i]);
+                if (loc >= 0) glUniform3fv(loc, 1, g_gx.ind_mtx[i][1]);
+                loc = UL(ind_mtx_scale[i]);
+                if (loc >= 0) glUniform1f(loc, exp2f((float)g_gx.ind_mtx_scale[i]));
             }
         }
 
@@ -1525,7 +1579,7 @@ void pc_gx_flush_vertices(void) {
         }
 
         if (dirty & PC_GX_DIRTY_TEXGEN) {
-            for (int tg = 0; tg < 2; tg++) {
+            for (int tg = 0; tg < 8; tg++) {
                 int mtx_id = g_gx.tex_gen_mtx[tg];
                 int slot = pc_tex_mtx_id_to_slot(mtx_id);
                 int has_mtx = (slot >= 0 && slot < 10);
@@ -1534,12 +1588,14 @@ void pc_gx_flush_vertices(void) {
                     const float* tm = (const float*)g_gx.tex_mtx[slot];
                     loc = g_gx.uloc.texmtx_row0[tg]; if (loc >= 0) glUniform4f(loc, tm[0], tm[1], tm[2], tm[3]);
                     loc = g_gx.uloc.texmtx_row1[tg]; if (loc >= 0) glUniform4f(loc, tm[4], tm[5], tm[6], tm[7]);
+                    loc = g_gx.uloc.texmtx_row2[tg]; if (loc >= 0) glUniform4f(loc, tm[8], tm[9], tm[10], tm[11]);
                 }
+                loc = g_gx.uloc.texgen_type[tg]; if (loc >= 0) glUniform1i(loc, g_gx.tex_gen_type[tg]);
                 loc = g_gx.uloc.texgen_src[tg]; if (loc >= 0) glUniform1i(loc, g_gx.tex_gen_src[tg]);
             }
         }
 
-        if (dirty & (PC_GX_DIRTY_TEXTURES | PC_GX_DIRTY_TEV_STAGES)) {
+        if (dirty & (PC_GX_DIRTY_TEXTURES | PC_GX_DIRTY_TEV_STAGES | PC_GX_DIRTY_INDIRECT)) {
             int use_tex_stage[PC_GX_MAX_TEV_STAGES] = { 0 };
             GLuint tex_obj_stage[PC_GX_MAX_TEV_STAGES] = { 0 };
             for (int s = 0; s < PC_GX_MAX_TEV_STAGES; s++) {
@@ -1553,6 +1609,18 @@ void pc_gx_flush_vertices(void) {
                     glActiveTexture(GL_TEXTURE0 + s);
                     glBindTexture(GL_TEXTURE_2D, tex_obj_stage[s]);
                 }
+                int map = (s < g_gx.num_tev_stages) ? g_gx.tev_stages[s].tex_map : -1;
+                float tw = (map >= 0 && map < 8 && g_gx.tex_obj_w[map] > 0) ? (float)g_gx.tex_obj_w[map] : 1.0f;
+                float th = (map >= 0 && map < 8 && g_gx.tex_obj_h[map] > 0) ? (float)g_gx.tex_obj_h[map] : 1.0f;
+                loc = UL(tex_size[s]); if (loc >= 0) glUniform2f(loc, tw, th);
+            }
+            for (int i = 0; i < 4; i++) {
+                int map = g_gx.ind_order[i].tex_map;
+                GLuint tex = (map >= 0 && map < 8) ? g_gx.gl_textures[map] : 0;
+                if (tex != 0) {
+                    glActiveTexture(GL_TEXTURE4 + i);
+                    glBindTexture(GL_TEXTURE_2D, tex);
+                }
             }
             glActiveTexture(GL_TEXTURE0);
             loc = UL(use_texture0); if (loc >= 0) glUniform1i(loc, use_tex_stage[0]);
@@ -1561,10 +1629,6 @@ void pc_gx_flush_vertices(void) {
             loc = UL(use_texture3); if (loc >= 0) glUniform1i(loc, use_tex_stage[3]);
             /* Sampler bindings (texture0=0, texture1=1, texture2=2, texture3=3) set once on shader init */
         }
-
-        /* Indirect textures stripped — shader doesn't use them.
-         * Uniforms declared for C-side compat but never read in fragment shader.
-         * Skipping saves ~25 GL calls per draw on ARM Mali. */
 
         if (dirty & PC_GX_DIRTY_FOG) {
             loc = UL(fog_type);  if (loc >= 0) glUniform1i(loc, g_gx.fog_type);
