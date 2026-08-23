@@ -30,17 +30,24 @@ uniform ivec4 u_tev2_color_in;
 uniform ivec4 u_tev2_alpha_in;
 uniform int u_tev2_color_op;
 uniform int u_tev2_alpha_op;
+uniform ivec4 u_tev3_color_in;
+uniform ivec4 u_tev3_alpha_in;
+uniform int u_tev3_color_op;
+uniform int u_tev3_alpha_op;
 
 uniform int u_num_tev_stages;
 uniform sampler2D u_texture0;
 uniform sampler2D u_texture1;
 uniform sampler2D u_texture2;
+uniform sampler2D u_texture3;
 uniform int u_use_texture0;
 uniform int u_use_texture1;
 uniform int u_use_texture2;
+uniform int u_use_texture3;
 uniform int u_tev0_tc_src;
 uniform int u_tev1_tc_src;
 uniform int u_tev2_tc_src;
+uniform int u_tev3_tc_src;
 
 uniform int u_lighting_enabled;
 uniform vec4 u_mat_color;
@@ -55,18 +62,21 @@ uniform vec3 u_light_pos[8];
 uniform vec4 u_light_color[8];
 
 uniform vec4 u_kcolor[4];
-uniform ivec3 u_tev_ksel[3];
+uniform ivec3 u_tev_ksel[4];
 
 uniform ivec4 u_tev0_bsc;
 uniform ivec4 u_tev1_bsc;
 uniform ivec4 u_tev2_bsc;
+uniform ivec4 u_tev3_bsc;
 uniform ivec4 u_tev0_out;
 uniform ivec4 u_tev1_out;
 uniform ivec4 u_tev2_out;
+uniform ivec4 u_tev3_out;
 uniform ivec4 u_swap_table[4];
 uniform ivec2 u_tev0_swap;
 uniform ivec2 u_tev1_swap;
 uniform ivec2 u_tev2_swap;
+uniform ivec2 u_tev3_swap;
 
 uniform int u_alpha_comp0;
 uniform int u_alpha_ref0;
@@ -79,14 +89,16 @@ uniform int u_num_ind_stages;
 uniform sampler2D u_ind_tex0;
 uniform sampler2D u_ind_tex1;
 uniform vec2 u_ind_scale[4];
-uniform vec3 u_ind_mtx_r0[3];
-uniform vec3 u_ind_mtx_r1[3];
+uniform vec3 u_ind_mtx_r0[4];
+uniform vec3 u_ind_mtx_r1[4];
 uniform ivec4 u_tev0_ind_cfg;
 uniform ivec4 u_tev1_ind_cfg;
 uniform ivec4 u_tev2_ind_cfg;
+uniform ivec4 u_tev3_ind_cfg;
 uniform ivec3 u_tev0_ind_wrap;
 uniform ivec3 u_tev1_ind_wrap;
 uniform ivec3 u_tev2_ind_wrap;
+uniform ivec3 u_tev3_ind_wrap;
 
 out vec4 fragColor;
 
@@ -230,13 +242,16 @@ void main() {
     vec2 stc0 = (u_tev0_tc_src == 0) ? tc0 : tc1;
     vec2 stc1 = (u_tev1_tc_src == 0) ? tc0 : tc1;
     vec2 stc2 = (u_tev2_tc_src == 0) ? tc0 : tc1;
+    vec2 stc3 = (u_tev3_tc_src == 0) ? tc0 : tc1;
 
     vec4 texColor0 = vec4(1.0);
     vec4 texColor1 = vec4(1.0);
     vec4 texColor2 = vec4(1.0);
+    vec4 texColor3 = vec4(1.0);
     if (u_use_texture0 != 0) texColor0 = texture(u_texture0, stc0);
     if (u_use_texture1 != 0) texColor1 = texture(u_texture1, stc1);
     if (u_use_texture2 != 0) texColor2 = texture(u_texture2, stc2);
+    if (u_use_texture3 != 0) texColor3 = texture(u_texture3, stc3);
 
     /* Simplified rasterized color — no per-light loop, just ambient */
     vec4 rasColor;
@@ -298,6 +313,18 @@ void main() {
                             prev, sTex, sRas, r0, r1, r2, kc2, ka2);
         s2 = applyBSC(s2, u_tev2_bsc);
         writeToReg(s2, u_tev2_out, prev, r0, r1, r2);
+    }
+
+    if (u_num_tev_stages > 3) {
+        vec4 sTex = applySwap(texColor3, u_swap_table[u_tev3_swap.y]);
+        vec4 sRas = applySwap(rasColor,  u_swap_table[u_tev3_swap.x]);
+        vec3 kc3 = getKonstC(u_tev_ksel[3].x);
+        float ka3 = getKonstA(u_tev_ksel[3].y);
+        vec4 s3 = tevStage(u_tev3_color_in, u_tev3_color_op,
+                            u_tev3_alpha_in, u_tev3_alpha_op,
+                            prev, sTex, sRas, r0, r1, r2, kc3, ka3);
+        s3 = applyBSC(s3, u_tev3_bsc);
+        writeToReg(s3, u_tev3_out, prev, r0, r1, r2);
     }
 
     /* Alpha compare */

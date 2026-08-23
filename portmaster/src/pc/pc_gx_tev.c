@@ -128,8 +128,8 @@ typedef struct {
         u8 color_clamp, alpha_clamp;
         u8 color_out, alpha_out;
         u8 k_color_sel, k_alpha_sel;
-    } s[3]; /* 20 bytes × 3 = 60 bytes */
-} ShaderKey; /* 72 bytes */
+    } s[4]; /* 20 bytes × 4 = 80 bytes */
+} ShaderKey; /* 92 bytes */
 
 static void build_key(PCGXState* st, ShaderKey* k) {
     memset(k, 0, sizeof(*k));
@@ -445,8 +445,8 @@ static char* generate_frag(PCGXState* st) {
     P("\n");
 
     /* Texture sampling — only for stages that exist */
-    const char* tex_names[] = { "u_texture0", "u_texture1", "u_texture2" };
-    const char* use_names[] = { "u_use_texture0", "u_use_texture1", "u_use_texture2" };
+    const char* tex_names[] = { "u_texture0", "u_texture1", "u_texture2", "u_texture3" };
+    const char* use_names[] = { "u_use_texture0", "u_use_texture1", "u_use_texture2", "u_use_texture3" };
     for (int s = 0; s < ns; s++) {
         P("    vec4 texColor%d = vec4(1.0);\n", s);
         P("    if (%s != 0) texColor%d = texture(%s, stc%d);\n",
@@ -495,7 +495,7 @@ static char* generate_frag(PCGXState* st) {
     /* --- TEV stages (fully inlined, zero branches) --- */
     for (int s = 0; s < ns; s++) {
         PCGXTevStage* ts = &st->tev_stages[s];
-        const char* swap_names[] = { "u_tev0_swap", "u_tev1_swap", "u_tev2_swap" };
+        const char* swap_names[] = { "u_tev0_swap", "u_tev1_swap", "u_tev2_swap", "u_tev3_swap" };
 
         P("    /* TEV stage %d */\n", s);
         P("    {\n");

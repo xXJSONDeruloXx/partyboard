@@ -405,6 +405,36 @@ static int        s_has_base_vertex = 0;
 static int        s_stream_probe = 0;     /* flushes still GL-error-checked */
 static GLsizeiptr s_stream_offset = 0;    /* in vertices */
 static GLsizeiptr s_attrib_base = -1;     /* attrib pointers' current base */
+static void pc_gx_upload_matrix4(GLint loc, const float* src) {
+#ifdef PC_USE_GLES
+    /* OpenGL ES requires transpose=GL_FALSE.  GX stores row-major matrices,
+     * so provide the equivalent column-major array explicitly. */
+    {
+        float transposed[16];
+        for (int row = 0; row < 4; row++)
+            for (int col = 0; col < 4; col++)
+                transposed[col * 4 + row] = src[row * 4 + col];
+        glUniformMatrix4fv(loc, 1, GL_FALSE, transposed);
+    }
+#else
+    glUniformMatrix4fv(loc, 1, GL_TRUE, src);
+#endif
+}
+
+static void pc_gx_upload_matrix3(GLint loc, const float* src) {
+#ifdef PC_USE_GLES
+    /* See pc_gx_upload_matrix4: ES has no transpose-matrix upload mode. */
+    {
+        float transposed[9];
+        for (int row = 0; row < 3; row++)
+            for (int col = 0; col < 3; col++)
+                transposed[col * 3 + row] = src[row * 3 + col];
+        glUniformMatrix3fv(loc, 1, GL_FALSE, transposed);
+    }
+#else
+    glUniformMatrix3fv(loc, 1, GL_TRUE, src);
+#endif
+}
 
 static void pc_gx_set_attrib_base(GLsizeiptr first_vertex) {
     size_t stride = sizeof(PCGXVertex);
@@ -1184,9 +1214,11 @@ void pc_gx_fill_uniform_locations(GLuint shader, PCGXUniformLocs* u) {
     u->use_texture0 = UL("u_use_texture0");
     u->use_texture1 = UL("u_use_texture1");
     u->use_texture2 = UL("u_use_texture2");
+    u->use_texture3 = UL("u_use_texture3");
     u->texture0 = UL("u_texture0");
     u->texture1 = UL("u_texture1");
     u->texture2 = UL("u_texture2");
+    u->texture3 = UL("u_texture3");
 
     u->num_ind_stages = UL("u_num_ind_stages");
     for (i = 0; i < 4; i++) {
@@ -1324,6 +1356,7 @@ void pc_gx_flush_vertices(void) {
             sl = g_gx.uloc.texture0; if (sl >= 0) glUniform1i(sl, 0);
             sl = g_gx.uloc.texture1; if (sl >= 0) glUniform1i(sl, 1);
             sl = g_gx.uloc.texture2; if (sl >= 0) glUniform1i(sl, 2);
+            sl = g_gx.uloc.texture3; if (sl >= 0) glUniform1i(sl, 3);
         }
     }
 
@@ -1376,7 +1409,7 @@ void pc_gx_flush_vertices(void) {
 
         if (dirty & PC_GX_DIRTY_PROJECTION) {
             loc = UL(projection);
-            if (loc >= 0) glUniformMatrix4fv(loc, 1, GL_TRUE, (float*)g_gx.projection_mtx);
+            if (loc >= 0) pc_gx_upload_matrix4(loc, (const float*)g_gx.projection_mtx);
         }
 
         if (dirty & PC_GX_DIRTY_MODELVIEW) {
@@ -1388,10 +1421,10 @@ void pc_gx_flush_vertices(void) {
                 mv44[ 4] = src[4]; mv44[ 5] = src[5]; mv44[ 6] = src[6]; mv44[ 7] = src[7];
                 mv44[ 8] = src[8]; mv44[ 9] = src[9]; mv44[10] = src[10]; mv44[11] = src[11];
                 mv44[12] = 0.0f;   mv44[13] = 0.0f;   mv44[14] = 0.0f;    mv44[15] = 1.0f;
-                glUniformMatrix4fv(loc, 1, GL_TRUE, mv44);
+                pc_gx_upload_matrix4(loc, mv44);
             }
             loc = UL(normal_mtx);
-            if (loc >= 0) glUniformMatrix3fv(loc, 1, GL_TRUE, (const float*)g_gx.nrm_mtx[g_gx.current_mtx]);
+            if (loc >= 0) pc_gx_upload_matrix3(loc, (const float*)g_gx.nrm_mtx[g_gx.current_mtx]);
         }
 
         if (dirty & PC_GX_DIRTY_TEV_COLORS) {
@@ -1525,7 +1558,8 @@ void pc_gx_flush_vertices(void) {
             loc = UL(use_texture0); if (loc >= 0) glUniform1i(loc, use_tex_stage[0]);
             loc = UL(use_texture1); if (loc >= 0) glUniform1i(loc, use_tex_stage[1]);
             loc = UL(use_texture2); if (loc >= 0) glUniform1i(loc, use_tex_stage[2]);
-            /* Sampler bindings (texture0=0, texture1=1, texture2=2) set once on shader init */
+            loc = UL(use_texture3); if (loc >= 0) glUniform1i(loc, use_tex_stage[3]);
+            /* Sampler bindings (texture0=0, texture1=1, texture2=2, texture3=3) set once on shader init */
         }
 
         /* Indirect textures stripped — shader doesn't use them.

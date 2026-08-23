@@ -51,7 +51,7 @@ void pc_gx_mark_dirty(unsigned int flag);
 #define PC_GX_MAX_ATTRIB_SIZE 64
 #define PC_GX_MAX_ATTR        26
 #define PC_GX_MAX_VTXFMT      8
-#define PC_GX_MAX_TEV_STAGES  3
+#define PC_GX_MAX_TEV_STAGES  4
 
 typedef struct {
     int has_position;
@@ -113,8 +113,8 @@ typedef struct {
     GLint diff_fn, attn_fn;
     GLint light_dir[8], light_a[8], light_k[8];
     GLint texmtx_enable[2], texmtx_row0[2], texmtx_row1[2], texgen_src[2];
-    GLint use_texture0, use_texture1, use_texture2;
-    GLint texture0, texture1, texture2;
+    GLint use_texture0, use_texture1, use_texture2, use_texture3;
+    GLint texture0, texture1, texture2, texture3;
     GLint tev_tc_src[PC_GX_MAX_TEV_STAGES];
     GLint num_ind_stages;
     GLint ind_tex[4], ind_scale[4];
